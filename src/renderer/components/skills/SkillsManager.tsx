@@ -14,9 +14,11 @@ import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
 import { setSkills } from '../../store/slices/skillSlice';
 import { RootState } from '../../store';
-import { Skill } from '../../types/skill';
+import { Skill, MarketplaceSkill } from '../../types/skill';
 import ErrorMessage from '../ErrorMessage';
 import Tooltip from '../ui/Tooltip';
+
+type SkillTab = 'installed' | 'marketplace';
 
 const SkillsManager: React.FC = () => {
   const dispatch = useDispatch();
@@ -28,6 +30,9 @@ const SkillsManager: React.FC = () => {
   const [isDownloadingSkill, setIsDownloadingSkill] = useState(false);
   const [isAddSkillMenuOpen, setIsAddSkillMenuOpen] = useState(false);
   const [isGithubImportOpen, setIsGithubImportOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<SkillTab>('installed');
+  const [marketplaceSkills, setMarketplaceSkills] = useState<MarketplaceSkill[]>([]);
+  const [isLoadingMarketplace, setIsLoadingMarketplace] = useState(false);
   const [skillPendingDelete, setSkillPendingDelete] = useState<Skill | null>(null);
   const [isDeletingSkill, setIsDeletingSkill] = useState(false);
 
@@ -55,6 +60,17 @@ const SkillsManager: React.FC = () => {
       unsubscribe();
     };
   }, [dispatch]);
+
+  useEffect(() => {
+    let isActive = true;
+    setIsLoadingMarketplace(true);
+    skillService.fetchMarketplaceSkills().then((data) => {
+      if (!isActive) return;
+      setMarketplaceSkills(data);
+      setIsLoadingMarketplace(false);
+    });
+    return () => { isActive = false; };
+  }, []);
 
   useEffect(() => {
     if (!isAddSkillMenuOpen) return;
@@ -106,6 +122,14 @@ const SkillsManager: React.FC = () => {
       return matchesSearch;
     });
   }, [skills, skillSearchQuery]);
+
+  const filteredMarketplaceSkills = useMemo(() => {
+    const query = skillSearchQuery.toLowerCase();
+    return marketplaceSkills.filter(skill => {
+      return skill.name.toLowerCase().includes(query)
+        || skill.description.toLowerCase().includes(query);
+    });
+  }, [marketplaceSkills, skillSearchQuery]);
 
   const formatSkillDate = (timestamp: number) => {
     const date = new Date(timestamp);
@@ -278,6 +302,43 @@ const SkillsManager: React.FC = () => {
         </div>
       </div>
 
+      <div className="flex items-center border-b dark:border-claude-darkBorder border-claude-border">
+        <button
+          type="button"
+          onClick={() => setActiveTab('installed')}
+          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+            activeTab === 'installed'
+              ? 'dark:text-claude-darkText text-claude-text'
+              : 'dark:text-claude-darkTextSecondary text-claude-textSecondary hover:dark:text-claude-darkText hover:text-claude-text'
+          }`}
+        >
+          {i18nService.t('skillInstalled')}
+          {skills.length > 0 && (
+            <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full dark:bg-claude-darkSurfaceHover bg-claude-surfaceHover">
+              {skills.length}
+            </span>
+          )}
+          <div className={`absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-colors ${
+            activeTab === 'installed' ? 'bg-claude-accent' : 'bg-transparent'
+          }`} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('marketplace')}
+          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+            activeTab === 'marketplace'
+              ? 'dark:text-claude-darkText text-claude-text'
+              : 'dark:text-claude-darkTextSecondary text-claude-textSecondary hover:dark:text-claude-darkText hover:text-claude-text'
+          }`}
+        >
+          {i18nService.t('skillMarketplace')}
+          <div className={`absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-colors ${
+            activeTab === 'marketplace' ? 'bg-claude-accent' : 'bg-transparent'
+          }`} />
+        </button>
+      </div>
+
+      {activeTab === 'installed' && (
       <div className="grid grid-cols-2 gap-3">
         {filteredSkills.length === 0 ? (
           <div className="col-span-2 text-center py-8 text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary">
@@ -358,6 +419,68 @@ const SkillsManager: React.FC = () => {
           ))
         )}
       </div>
+      )}
+
+      {activeTab === 'marketplace' && (
+        isLoadingMarketplace ? (
+          <div className="text-center py-12 text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary">
+            {i18nService.t('downloadingSkill')}
+          </div>
+        ) : filteredMarketplaceSkills.length === 0 ? (
+          <div className="text-center py-12 text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary">
+            {i18nService.t('skillMarketplaceEmpty')}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            {filteredMarketplaceSkills.map((skill) => (
+              <div
+                key={skill.id}
+                className="rounded-xl border dark:border-claude-darkBorder border-claude-border dark:bg-claude-darkSurface/50 bg-claude-surface/50 p-3 transition-colors hover:border-claude-accent/50"
+              >
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-7 h-7 rounded-lg dark:bg-claude-darkSurface bg-claude-surface flex items-center justify-center flex-shrink-0">
+                      <PuzzlePieceIcon className="h-4 w-4 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+                    </div>
+                    <span className="text-sm font-medium dark:text-claude-darkText text-claude-text truncate">
+                      {skill.name}
+                    </span>
+                  </div>
+                </div>
+
+                <Tooltip
+                  content={skill.description}
+                  position="bottom"
+                  maxWidth="360px"
+                  className="block w-full"
+                >
+                  <p className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary line-clamp-2 mb-2">
+                    {skill.description}
+                  </p>
+                </Tooltip>
+
+                <div className="flex items-center gap-2 text-[10px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                  {skill.source?.from && (
+                    <>
+                      <span className="px-1.5 py-0.5 rounded dark:bg-claude-darkSurfaceHover bg-claude-surfaceHover font-medium">
+                        {skill.source.from}
+                      </span>
+                      <span>·</span>
+                    </>
+                  )}
+                  {skill.version && (
+                    <>
+                      <span className="px-1.5 py-0.5 rounded dark:bg-claude-darkSurfaceHover bg-claude-surfaceHover font-medium">
+                        v{skill.version}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      )}
 
       {skillPendingDelete && (
         <div
