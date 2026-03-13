@@ -8,6 +8,7 @@
   "beforePack": "./scripts/electron-builder-hooks.cjs",
   "afterPack": "./scripts/electron-builder-hooks.cjs",
   "files": [
+    "package.json",
     {
       "from": "dist",
       "to": "dist",
