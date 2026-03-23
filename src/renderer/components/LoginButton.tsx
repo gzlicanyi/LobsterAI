@@ -110,11 +110,13 @@ const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   };
 
   const handleSubscribe = async () => {
-    await window.electron.shell.openExternal('https://local.youdao.com:5180/pricing');
+    const { getPortalPricingUrl } = await import('../services/endpoints');
+    await window.electron.shell.openExternal(getPortalPricingUrl());
   };
 
   const handleLearnMore = async () => {
-    await window.electron.shell.openExternal('https://local.youdao.com:5180/profile');
+    const { getPortalProfileUrl } = await import('../services/endpoints');
+    await window.electron.shell.openExternal(getPortalProfileUrl());
   };
 
   const phoneSuffix = user?.phone ? user.phone.slice(-4) : '';
