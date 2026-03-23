@@ -44,6 +44,7 @@ import {
   VolcengineIcon,
   OpenRouterIcon,
   OllamaIcon,
+  GitHubCopilotIcon,
   CustomProviderIcon,
 } from './icons/providers';
 
@@ -73,6 +74,7 @@ const providerKeys = [
   'stepfun',
   'xiaomi',
   'openrouter',
+  'github-copilot',
   'ollama',
   'custom',
 ] as const;
@@ -144,6 +146,7 @@ const providerMeta: Record<ProviderType, { label: string; icon: React.ReactNode 
   stepfun: { label: 'StepFun', icon: <StepfunIcon /> },
   volcengine: { label: 'Volcengine', icon: <VolcengineIcon /> },
   openrouter: { label: 'OpenRouter', icon: <OpenRouterIcon /> },
+  'github-copilot': { label: 'GitHub Copilot', icon: <GitHubCopilotIcon /> },
   ollama: { label: 'Ollama', icon: <OllamaIcon /> },
   custom: { label: 'Custom', icon: <CustomProviderIcon /> },
 };
@@ -191,7 +194,7 @@ const providerSwitchableDefaultBaseUrls: Partial<Record<ProviderType, { anthropi
   },
 };
 
-const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama';
+const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama' && provider !== 'github-copilot';
 const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '').toLowerCase();
 const normalizeApiFormat = (value: unknown): 'anthropic' | 'openai' => (
   value === 'openai' ? 'openai' : 'anthropic'
@@ -238,7 +241,7 @@ const getFixedApiFormatForProvider = (provider: string): 'anthropic' | 'openai' 
   if (provider === 'openai' || provider === 'gemini' || provider === 'stepfun') {
     return 'openai';
   }
-  if (provider === 'youdaozhiyun') {
+  if (provider === 'youdaozhiyun' || provider === 'github-copilot') {
     return 'openai';
   }
   if (provider === 'anthropic') {
@@ -416,6 +419,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     search: 'Ctrl+F',
     settings: 'Ctrl+,',
   });
+
+  // GitHub Copilot device code auth state
+  const [copilotAuthStatus, setCopilotAuthStatus] = useState<'idle' | 'requesting' | 'awaiting_user' | 'polling' | 'authenticated' | 'error'>('idle');
+  const [copilotUserCode, setCopilotUserCode] = useState('');
+  const [copilotVerificationUri, setCopilotVerificationUri] = useState('');
+  const [copilotGithubUser, setCopilotGithubUser] = useState('');
+  const [copilotError, setCopilotError] = useState<string | null>(null);
 
   // State for model editing
   const [isAddingModel, setIsAddingModel] = useState(false);
@@ -1108,6 +1118,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       return;
     }
 
+    // GitHub Copilot requires device code auth — redirect to sign-in flow
+    if (provider === 'github-copilot' && isEnabling && !providerConfig.apiKey.trim()) {
+      handleCopilotSignIn();
+      return;
+    }
+
     setProviders(prev => ({
       ...prev,
       [provider]: {
@@ -1131,6 +1147,75 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         },
       };
     });
+  };
+
+  // GitHub Copilot device code authentication
+  const handleCopilotSignIn = async () => {
+    try {
+      setCopilotAuthStatus('requesting');
+      setCopilotError(null);
+
+      // Step 1: Request device code
+      const { userCode, verificationUri, deviceCode, interval, expiresIn } =
+        await window.electron.githubCopilot.requestDeviceCode();
+
+      setCopilotUserCode(userCode);
+      setCopilotVerificationUri(verificationUri);
+      setCopilotAuthStatus('awaiting_user');
+
+      // Open verification URL in browser
+      await window.electron.shell.openExternal(verificationUri);
+
+      // Step 2: Poll for token
+      setCopilotAuthStatus('polling');
+      const result = await window.electron.githubCopilot.pollForToken(deviceCode, interval, expiresIn);
+
+      if (result.success && result.token) {
+        setCopilotGithubUser(result.githubUser || '');
+        setCopilotAuthStatus('authenticated');
+
+        // Store the Copilot API token in the provider's apiKey field
+        handleProviderConfigChange('github-copilot', 'apiKey', result.token);
+        // Auto-enable the provider
+        enableProvider('github-copilot');
+      } else {
+        setCopilotError(result.error || 'Authentication failed');
+        setCopilotAuthStatus('error');
+      }
+    } catch (error: any) {
+      setCopilotError(error.message || 'Authentication failed');
+      setCopilotAuthStatus('error');
+    }
+  };
+
+  const handleCopilotSignOut = async () => {
+    try {
+      await window.electron.githubCopilot.signOut();
+      setCopilotAuthStatus('idle');
+      setCopilotGithubUser('');
+      setCopilotUserCode('');
+      setCopilotError(null);
+      // Clear the token from provider config
+      handleProviderConfigChange('github-copilot', 'apiKey', '');
+      // Disable the provider
+      setProviders(prev => ({
+        ...prev,
+        'github-copilot': { ...prev['github-copilot'], enabled: false },
+      }));
+    } catch (error) {
+      console.error('[Settings] GitHub Copilot sign-out failed:', error);
+    }
+  };
+
+  const handleCopilotCancelAuth = async () => {
+    try {
+      await window.electron.githubCopilot.cancelPolling();
+      setCopilotAuthStatus('idle');
+      setCopilotUserCode('');
+      setCopilotError(null);
+    } catch (error) {
+      console.error('[Settings] GitHub Copilot cancel polling failed:', error);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -2370,6 +2455,112 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                       </button>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* GitHub Copilot Device Code Authentication */}
+              {activeProvider === 'github-copilot' && (
+                <div>
+                  <label className="block text-xs font-medium dark:text-claude-darkText text-claude-text mb-2">
+                    {i18nService.t('githubCopilotAuth')}
+                  </label>
+
+                  {/* Idle / Error state — show Sign In button */}
+                  {(copilotAuthStatus === 'idle' || copilotAuthStatus === 'error') && !providers['github-copilot'].apiKey && (
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={handleCopilotSignIn}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-claude-accent text-white text-xs font-medium hover:bg-claude-accent/90 transition-colors"
+                      >
+                        <GitHubCopilotIcon className="w-4 h-4" />
+                        {i18nService.t('githubCopilotSignIn')}
+                      </button>
+                      {copilotError && (
+                        <p className="text-xs text-red-500 dark:text-red-400">{copilotError}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Requesting state */}
+                  {copilotAuthStatus === 'requesting' && (
+                    <div className="flex items-center gap-2 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
+                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      {i18nService.t('githubCopilotRequesting')}
+                    </div>
+                  )}
+
+                  {/* Awaiting user / Polling state — show device code */}
+                  {(copilotAuthStatus === 'awaiting_user' || copilotAuthStatus === 'polling') && (
+                    <div className="space-y-3">
+                      <div className="p-3 rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset border border-claude-border dark:border-claude-darkBorder">
+                        <p className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary mb-2">
+                          {i18nService.t('githubCopilotEnterCode')}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <code className="text-lg font-mono font-bold tracking-widest dark:text-claude-darkText text-claude-text">
+                            {copilotUserCode}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(copilotUserCode);
+                            }}
+                            className="px-2 py-0.5 rounded text-[10px] text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent border border-claude-border dark:border-claude-darkBorder transition-colors"
+                          >
+                            {i18nService.t('copy') || 'Copy'}
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => window.electron.shell.openExternal(copilotVerificationUri)}
+                          className="mt-2 text-xs text-claude-accent hover:underline"
+                        >
+                          {copilotVerificationUri}
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
+                          <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                          {i18nService.t('githubCopilotWaiting')}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleCopilotCancelAuth}
+                          className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-red-500 transition-colors"
+                        >
+                          {i18nService.t('cancel')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Authenticated state — show connected user */}
+                  {(copilotAuthStatus === 'authenticated' || providers['github-copilot'].apiKey) && copilotAuthStatus !== 'requesting' && copilotAuthStatus !== 'awaiting_user' && copilotAuthStatus !== 'polling' && (
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset border border-claude-border dark:border-claude-darkBorder">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-green-500" />
+                        <span className="text-xs dark:text-claude-darkText text-claude-text">
+                          {copilotGithubUser
+                            ? `${i18nService.t('githubCopilotConnected')} @${copilotGithubUser}`
+                            : i18nService.t('githubCopilotConnected')}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopilotSignOut}
+                        className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-red-500 transition-colors"
+                      >
+                        {i18nService.t('githubCopilotSignOut')}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

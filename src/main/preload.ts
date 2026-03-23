@@ -392,4 +392,29 @@ contextBridge.exposeInMainWorld('electron', {
         }>,
     },
   },
+  githubCopilot: {
+    requestDeviceCode: () =>
+      ipcRenderer.invoke('github-copilot:request-device-code') as Promise<{
+        userCode: string;
+        verificationUri: string;
+        deviceCode: string;
+        interval: number;
+        expiresIn: number;
+      }>,
+    pollForToken: (deviceCode: string, interval: number, expiresIn: number) =>
+      ipcRenderer.invoke('github-copilot:poll-for-token', { deviceCode, interval, expiresIn }) as Promise<{
+        success: boolean;
+        token?: string;
+        githubUser?: string;
+        error?: string;
+      }>,
+    cancelPolling: () => ipcRenderer.invoke('github-copilot:cancel-polling') as Promise<void>,
+    signOut: () => ipcRenderer.invoke('github-copilot:sign-out') as Promise<void>,
+    refreshToken: (githubToken: string) =>
+      ipcRenderer.invoke('github-copilot:refresh-token', { githubToken }) as Promise<{
+        success: boolean;
+        token?: string;
+        error?: string;
+      }>,
+  },
 });

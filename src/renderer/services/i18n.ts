@@ -1062,6 +1062,16 @@ const translations: Record<LanguageType, Record<string, string>> = {
     privacyDialogLinkText: '网易有道LobsterAI服务协议',
     privacyDialogAccept: '我已阅读并同意',
     privacyDialogReject: '拒绝',
+    // GitHub Copilot
+    githubCopilotAuth: 'GitHub 账号认证',
+    githubCopilotSignIn: '使用 GitHub 登录',
+    githubCopilotSignOut: '退出登录',
+    githubCopilotRequesting: '正在请求设备码...',
+    githubCopilotEnterCode: '请在浏览器中打开以下链接，输入设备码完成授权：',
+    githubCopilotWaiting: '等待授权完成...',
+    githubCopilotConnected: '已连接',
+    githubCopilotNoSubscription: '您没有有效的 GitHub Copilot 订阅',
+    copy: '复制',
   },
   en: {
     // Common
@@ -2119,6 +2129,16 @@ const translations: Record<LanguageType, Record<string, string>> = {
     privacyDialogLinkText: 'NetEase Youdao LobsterAI Terms of Service',
     privacyDialogAccept: 'I have read and agree',
     privacyDialogReject: 'Decline',
+    // GitHub Copilot
+    githubCopilotAuth: 'GitHub Account Authentication',
+    githubCopilotSignIn: 'Sign in with GitHub',
+    githubCopilotSignOut: 'Sign Out',
+    githubCopilotRequesting: 'Requesting device code...',
+    githubCopilotEnterCode: 'Open the link below in your browser and enter the device code to authorize:',
+    githubCopilotWaiting: 'Waiting for authorization...',
+    githubCopilotConnected: 'Connected',
+    githubCopilotNoSubscription: 'You do not have an active GitHub Copilot subscription',
+    copy: 'Copy',
   }
 };
 

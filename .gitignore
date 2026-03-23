@@ -12,6 +12,7 @@ dist-electron
 __pycache__/
 .codebuddy/
 .work/
+.idea/
 vendor/openclaw-runtime/
 vendor/openclaw-plugins/
 

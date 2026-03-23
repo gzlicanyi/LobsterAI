@@ -3100,6 +3100,56 @@ if (!gotTheLock) {
     }
   });
 
+  // GitHub Copilot device code authentication handlers
+  ipcMain.handle('github-copilot:request-device-code', async () => {
+    const { requestDeviceCode } = await import('./libs/githubCopilotAuth');
+    try {
+      const result = await requestDeviceCode();
+      return {
+        userCode: result.user_code,
+        verificationUri: result.verification_uri,
+        deviceCode: result.device_code,
+        interval: result.interval,
+        expiresIn: result.expires_in,
+      };
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : 'Failed to request device code');
+    }
+  });
+
+  ipcMain.handle('github-copilot:poll-for-token', async (_event, { deviceCode, interval, expiresIn }: { deviceCode: string; interval: number; expiresIn: number }) => {
+    const { pollForAccessToken, getCopilotToken, getGitHubUser } = await import('./libs/githubCopilotAuth');
+    try {
+      const githubAccessToken = await pollForAccessToken(deviceCode, interval, expiresIn);
+      const githubUser = await getGitHubUser(githubAccessToken);
+      const { token: copilotToken } = await getCopilotToken(githubAccessToken);
+      // Store the GitHub access token for later token refresh
+      getStore().set('github_copilot_github_token', githubAccessToken);
+      return { success: true, token: copilotToken, githubUser };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Authentication failed' };
+    }
+  });
+
+  ipcMain.handle('github-copilot:cancel-polling', async () => {
+    const { cancelPolling } = await import('./libs/githubCopilotAuth');
+    cancelPolling();
+  });
+
+  ipcMain.handle('github-copilot:sign-out', async () => {
+    getStore().delete('github_copilot_github_token');
+  });
+
+  ipcMain.handle('github-copilot:refresh-token', async (_event, { githubToken }: { githubToken: string }) => {
+    const { getCopilotToken } = await import('./libs/githubCopilotAuth');
+    try {
+      const { token } = await getCopilotToken(githubToken);
+      return { success: true, token };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Token refresh failed' };
+    }
+  });
+
   ipcMain.handle('generate-session-title', async (_event, userInput: string | null) => {
     return generateSessionTitle(userInput);
   });

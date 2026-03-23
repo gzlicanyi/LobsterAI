@@ -88,6 +88,11 @@ class ApiService {
       return `${normalized}/v1beta/openai/chat/completions`;
     }
 
+    // GitHub Copilot uses /chat/completions directly (no /v1 prefix)
+    if (provider === 'github-copilot') {
+      return `${normalized}/chat/completions`;
+    }
+
     // Handle /v1, /v4 etc. versioned paths
     if (/\/v\d+$/.test(normalized)) {
       return `${normalized}/chat/completions`;
@@ -263,7 +268,7 @@ class ApiService {
   }
 
   private providerRequiresApiKey(provider: string): boolean {
-    return provider !== 'ollama';
+    return provider !== 'ollama' && provider !== 'github-copilot';
   }
 
   // 检测当前选择的模型属于哪个 provider
@@ -271,7 +276,7 @@ class ApiService {
     const normalizedHint = providerHint?.toLowerCase();
     if (
       normalizedHint
-      && ['openai', 'deepseek', 'moonshot', 'zhipu', 'minimax', 'youdaozhiyun', 'qwen', 'openrouter', 'gemini', 'anthropic', 'xiaomi', 'stepfun', 'volcengine', 'ollama', 'custom'].includes(normalizedHint)
+      && ['openai', 'deepseek', 'moonshot', 'zhipu', 'minimax', 'youdaozhiyun', 'qwen', 'openrouter', 'gemini', 'anthropic', 'xiaomi', 'stepfun', 'volcengine', 'github-copilot', 'ollama', 'custom'].includes(normalizedHint)
     ) {
       return normalizedHint;
     }

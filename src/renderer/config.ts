@@ -169,6 +169,17 @@ export interface AppConfig {
         supportsImage?: boolean;
       }>;
     };
+    'github-copilot': {
+      enabled: boolean;
+      apiKey: string;
+      baseUrl: string;
+      apiFormat?: 'anthropic' | 'openai';
+      models?: Array<{
+        id: string;
+        name: string;
+        supportsImage?: boolean;
+      }>;
+    };
     ollama: {
       enabled: boolean;
       apiKey: string;
@@ -380,6 +391,18 @@ export const defaultConfig: AppConfig = {
         { id: 'google/gemini-3-pro-preview', name: 'Gemini 3 Pro', supportsImage: true },
       ]
     },
+    'github-copilot': {
+      enabled: false,
+      apiKey: '',
+      baseUrl: 'https://api.githubcopilot.com',
+      apiFormat: 'openai',
+      models: [
+        { id: 'gpt-4o', name: 'GPT-4o', supportsImage: true },
+        { id: 'claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', supportsImage: true },
+        { id: 'o3-mini', name: 'o3-mini', supportsImage: false },
+        { id: 'gemini-2.0-flash-001', name: 'Gemini 2.0 Flash', supportsImage: true }
+      ]
+    },
     ollama: {
       enabled: false,
       apiKey: '',
@@ -423,8 +446,8 @@ export const CONFIG_KEYS = {
 };
 
 // 模型提供商分类
-export const CHINA_PROVIDERS = ['deepseek', 'moonshot', 'qwen', 'zhipu', 'minimax', 'volcengine', 'youdaozhiyun', 'stepfun', 'xiaomi', 'ollama', 'custom'] as const;
-export const GLOBAL_PROVIDERS = ['openai', 'gemini', 'anthropic', 'openrouter'] as const;
+export const CHINA_PROVIDERS = ['deepseek', 'moonshot', 'qwen', 'zhipu', 'minimax', 'volcengine', 'youdaozhiyun', 'stepfun', 'xiaomi', 'github-copilot', 'ollama', 'custom'] as const;
+export const GLOBAL_PROVIDERS = ['openai', 'gemini', 'anthropic', 'github-copilot', 'openrouter'] as const;
 export const EN_PRIORITY_PROVIDERS = ['openai', 'anthropic', 'gemini'] as const;
 
 /**

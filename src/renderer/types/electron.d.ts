@@ -458,6 +458,28 @@ interface IElectronAPI {
       }>;
     };
   };
+  githubCopilot: {
+    requestDeviceCode: () => Promise<{
+      userCode: string;
+      verificationUri: string;
+      deviceCode: string;
+      interval: number;
+      expiresIn: number;
+    }>;
+    pollForToken: (deviceCode: string, interval: number, expiresIn: number) => Promise<{
+      success: boolean;
+      token?: string;
+      githubUser?: string;
+      error?: string;
+    }>;
+    cancelPolling: () => Promise<void>;
+    signOut: () => Promise<void>;
+    refreshToken: (githubToken: string) => Promise<{
+      success: boolean;
+      token?: string;
+      error?: string;
+    }>;
+  };
 }
 
 // IM Gateway types
