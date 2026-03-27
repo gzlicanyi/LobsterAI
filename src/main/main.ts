@@ -1747,15 +1747,17 @@ if (!gotTheLock) {
   ipcMain.handle('log:exportZip', async (event) => {
     try {
       const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+      if (!ownerWindow || ownerWindow.isDestroyed()) {
+        return { success: false, error: 'Window is not available' };
+      }
+
       const saveOptions = {
         title: 'Export Logs',
         defaultPath: path.join(app.getPath('downloads'), buildLogExportFileName()),
         filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
       };
 
-      const saveResult = ownerWindow
-        ? await dialog.showSaveDialog(ownerWindow, saveOptions)
-        : await dialog.showSaveDialog(saveOptions);
+      const saveResult = await dialog.showSaveDialog(ownerWindow, saveOptions);
 
       if (saveResult.canceled || !saveResult.filePath) {
         return { success: true, canceled: true };
@@ -1777,6 +1779,7 @@ if (!gotTheLock) {
         missingEntries: archiveResult.missingEntries,
       };
     } catch (error) {
+      console.error('[LogExport] export failed:', error);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to export logs',
