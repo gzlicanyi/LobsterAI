@@ -1,4 +1,4 @@
-import { AppConfig, CONFIG_KEYS, defaultConfig } from '../config';
+import { AppConfig, CONFIG_KEYS, defaultConfig, isCustomProvider } from '../config';
 import { localStore } from './store';
 
 const getFixedProviderApiFormat = (providerKey: string): 'anthropic' | 'openai' | null => {
@@ -64,6 +64,45 @@ const normalizeProvidersConfig = (providers: AppConfig['providers']): AppConfig[
       },
     ])
   ) as AppConfig['providers'];
+};
+
+/**
+ * Migrate legacy single `custom` provider to `custom_0` and initialize counter.
+ * Also ensures customProviderNextId is consistent with existing custom_N keys.
+ */
+const migrateCustomProviders = (config: AppConfig): AppConfig => {
+  const providers = config.providers;
+  if (!providers) return config;
+
+  const updatedProviders = { ...providers };
+  let nextId = config.customProviderNextId ?? 0;
+
+  // Migrate legacy `custom` key (without underscore) to `custom_0`
+  if ('custom' in updatedProviders && !isCustomProvider('custom')) {
+    const legacyCustom = updatedProviders['custom'];
+    // Only migrate if it has meaningful data (apiKey or baseUrl set)
+    if (legacyCustom) {
+      updatedProviders['custom_0'] = { ...legacyCustom };
+      delete updatedProviders['custom'];
+      nextId = Math.max(nextId, 1);
+    }
+  }
+
+  // Ensure nextId is greater than all existing custom_N suffixes
+  for (const key of Object.keys(updatedProviders)) {
+    if (isCustomProvider(key)) {
+      const suffix = parseInt(key.replace('custom_', ''), 10);
+      if (!isNaN(suffix) && suffix >= nextId) {
+        nextId = suffix + 1;
+      }
+    }
+  }
+
+  return {
+    ...config,
+    providers: updatedProviders as AppConfig['providers'],
+    customProviderNextId: nextId,
+  };
 };
 
 // Model IDs that have been removed from specific providers.
@@ -146,7 +185,7 @@ class ConfigService {
           );
         }
 
-        this.config = {
+        this.config = migrateCustomProviders({
           ...defaultConfig,
           ...storedConfig,
           api: {
@@ -163,7 +202,7 @@ class ConfigService {
             ...(storedConfig.shortcuts ?? {}),
           } as AppConfig['shortcuts'],
           providers: mergedProviders as AppConfig['providers'],
-        };
+        });
       }
     } catch (error) {
       console.error('Failed to load config:', error);

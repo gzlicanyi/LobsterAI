@@ -20,7 +20,7 @@ import { coworkService } from './services/cowork';
 import { authService } from './services/auth';
 import { scheduledTaskService } from './services/scheduledTask';
 import { checkForAppUpdate, type AppUpdateInfo, type AppUpdateDownloadProgress, UPDATE_POLL_INTERVAL_MS, UPDATE_HEARTBEAT_INTERVAL_MS } from './services/appUpdate';
-import { defaultConfig } from './config';
+import { defaultConfig, getProviderDisplayName } from './config';
 import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
 import type { ApiConfig } from './services/api';
@@ -125,7 +125,7 @@ const App: React.FC = () => {
                 providerModels.push({
                   id: model.id,
                   name: model.name,
-                  provider: providerName.charAt(0).toUpperCase() + providerName.slice(1),
+                  provider: getProviderDisplayName(providerName, providerConfig),
                   providerKey: providerName,
                   supportsImage: model.supportsImage ?? false,
                 });
@@ -415,7 +415,7 @@ const App: React.FC = () => {
             allModels.push({
               id: model.id,
               name: model.name,
-              provider: providerName.charAt(0).toUpperCase() + providerName.slice(1),
+              provider: getProviderDisplayName(providerName, providerConfig),
               providerKey: providerName,
               supportsImage: model.supportsImage ?? false,
             });
