@@ -11,11 +11,12 @@
 !macroend
 
 !macro customInit
-  ; Best-effort: terminate a running app instance before install/uninstall
+  ; Best-effort: terminate all running app instances before install/uninstall
   ; to avoid NSIS "app cannot be closed" errors during upgrades.
-  nsExec::ExecToLog 'taskkill /IM "${APP_EXECUTABLE_FILENAME}" /F /T'
+  ; The OpenClaw gateway also runs as LobsterAI.exe (ELECTRON_RUN_AS_NODE),
+  ; so we must kill all instances and wait until none remain.
+  nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -Command "Stop-Process -Name LobsterAI -Force -ErrorAction SilentlyContinue; for ($$i=0; $$i -lt 10; $$i++) { if (-not (Get-Process -Name LobsterAI -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 500 }"'
   Pop $0
-  Sleep 800
 !macroend
 
 !macro customInstall
@@ -80,6 +81,19 @@
   FileClose $2
 
   SetDetailsPrint both
+!macroend
+
+!macro customUnInit
+  ; Kill all running app instances before the uninstaller's built-in process
+  ; check. Without this, the uninstaller detects the OpenClaw gateway process
+  ; (also named LobsterAI.exe) and shows an "app cannot be closed" dialog
+  ; where even "Retry" never succeeds — because the gateway has no UI window
+  ; for the user to close.
+  ;
+  ; This also ensures old-uninstaller.exe (invoked by a newer installer during
+  ; upgrades) can cleanly remove the previous installation.
+  nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -Command "Stop-Process -Name LobsterAI -Force -ErrorAction SilentlyContinue; for ($$i=0; $$i -lt 10; $$i++) { if (-not (Get-Process -Name LobsterAI -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 500 }"'
+  Pop $0
 !macroend
 
 !macro customUnInstall
