@@ -24,7 +24,7 @@ export type McpBridgeConfig = {
 const mapExecutionModeToSandboxMode = (mode: CoworkExecutionMode): 'off' | 'non-main' | 'all' => {
   switch (mode) {
     case 'sandbox': return 'all';
-    case 'auto': return 'non-main';
+    case 'auto': return 'off';
     case 'local':
     default: return 'off';
   }
