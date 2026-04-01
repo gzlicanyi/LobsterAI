@@ -812,7 +812,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                     <StopIcon className="h-5 w-5" />
                   </button>
                 ) : (
-                  <div className="relative flex items-center rounded-xl shadow-subtle hover:shadow-card overflow-hidden">
+                  <div className="relative flex items-stretch rounded-xl shadow-subtle hover:shadow-card overflow-hidden">
                     <button
                       type="button"
                       onClick={handleSubmit}
@@ -828,7 +828,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                       type="button"
                       onClick={() => setShowSendShortcutMenu(!showSendShortcutMenu)}
                       disabled={!canSubmit}
-                      className="py-2 pr-1.5 pl-1 bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-l border-white/20"
+                      className="px-1 flex items-center bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-l border-white/20"
                       aria-label="Change send shortcut"
                     >
                       <ChevronDownIcon className="h-3 w-3" />
@@ -878,7 +878,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 <StopIcon className="h-4 w-4" />
               </button>
             ) : (
-              <div className="relative flex items-center flex-shrink-0 rounded-lg shadow-subtle hover:shadow-card overflow-hidden">
+              <div className="relative flex items-stretch flex-shrink-0 rounded-lg shadow-subtle hover:shadow-card overflow-hidden">
                 <button
                   type="button"
                   onClick={handleSubmit}
@@ -894,7 +894,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                   type="button"
                   onClick={() => setShowSendShortcutMenu(!showSendShortcutMenu)}
                   disabled={!canSubmit}
-                  className="py-2 pr-1.5 pl-1 bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-l border-white/20"
+                  className="px-1 flex items-center bg-primary hover:bg-primary-hover text-white transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-l border-white/20"
                   aria-label="Change send shortcut"
                 >
                   <ChevronDownIcon className="h-3 w-3" />
