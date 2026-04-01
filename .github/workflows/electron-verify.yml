@@ -14,8 +14,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ========== 验证可启动性 (Linux) ==========
-  verify-linux:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,104 +26,34 @@ jobs:
           path: ~/.npm
           key: npm-${{ runner.os }}-${{ hashFiles('package.json') }}
           restore-keys: npm-${{ runner.os }}-
-      
-      # 安装 Electron 依赖 (Linux 需要)
-      - name: Install Electron Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libuuid1 libsecret-1-0
-      
-      - run: npm install
-      - run: npm run build
-      - run: npm run compile:electron
-      
-      # 验证主进程可以加载 (不启动 GUI)
-      - name: Verify Main Process
-        run: |
-          node -e "
-            try {
-              const path = require('path');
-              const mainPath = path.join(process.cwd(), 'dist-electron', 'main.js');
-              console.log('Checking main process file:', mainPath);
-              
-              // 检查文件是否存在
-              const fs = require('fs');
-              if (!fs.existsSync(mainPath)) {
-                console.error('Main process file not found!');
-                process.exit(1);
-              }
-              
-              // 检查 preload 文件
-              const preloadPath = path.join(process.cwd(), 'dist-electron', 'preload.js');
-              if (!fs.existsSync(preloadPath)) {
-                console.error('Preload script not found!');
-                process.exit(1);
-              }
-              
-              console.log('✓ Main process files exist');
-              console.log('✓ Preload script exists');
-              console.log('Electron build verification passed');
-            } catch (error) {
-              console.error('Verification failed:', error);
-              process.exit(1);
-            }
-          "
 
-  # ========== 验证构建产物结构 ==========
-  verify-build-structure:
-    runs-on: ubuntu-latest
-    needs: verify-linux
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.x'
-      - uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('package.json') }}
-          restore-keys: npm-${{ runner.os }}-
-      
       - name: Install Electron Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libuuid1 libsecret-1-0
-      
+
       - run: npm install
       - run: npm run build
       - run: npm run compile:electron
-      
+
       - name: Verify Build Structure
         run: |
           echo "=== Verifying dist/ structure ==="
-          if [ ! -d "dist" ]; then
-            echo "❌ dist/ directory not found"
-            exit 1
-          fi
-          
-          if [ ! -f "dist/index.html" ]; then
-            echo "❌ dist/index.html not found"
-            exit 1
-          fi
-          
+          for f in dist/index.html; do
+            if [ ! -f "$f" ]; then
+              echo "❌ $f not found"
+              exit 1
+            fi
+          done
           echo "✓ dist/ structure verified"
-          
+
           echo "=== Verifying dist-electron/ structure ==="
-          if [ ! -d "dist-electron" ]; then
-            echo "❌ dist-electron/ directory not found"
-            exit 1
-          fi
-          
-          if [ ! -f "dist-electron/main.js" ]; then
-            echo "❌ dist-electron/main.js not found"
-            exit 1
-          fi
-          
-          if [ ! -f "dist-electron/preload.js" ]; then
-            echo "❌ dist-electron/preload.js not found"
-            exit 1
-          fi
-          
+          for f in dist-electron/main.js dist-electron/preload.js; do
+            if [ ! -f "$f" ]; then
+              echo "❌ $f not found"
+              exit 1
+            fi
+          done
           echo "✓ dist-electron/ structure verified"
-          
+
           echo "=== Build verification complete ==="
