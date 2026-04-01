@@ -13,9 +13,10 @@ import type {
   QQOpenClawConfig,
   DiscordOpenClawConfig,
   NimConfig,
-  XiaomifengConfig,
+  NeteaseBeeChanConfig,
   WecomOpenClawConfig,
   PopoOpenClawConfig,
+  WeixinOpenClawConfig,
   IMSettings,
 } from '../../types/im';
 import {
@@ -65,14 +66,17 @@ const imSlice = createSlice({
     setNimConfig: (state, action: PayloadAction<Partial<NimConfig>>) => {
       state.config.nim = { ...state.config.nim, ...action.payload };
     },
-    setXiaomifengConfig: (state, action: PayloadAction<Partial<XiaomifengConfig>>) => {
-      state.config.xiaomifeng = { ...state.config.xiaomifeng, ...action.payload };
+    setNeteaseBeeChanConfig: (state, action: PayloadAction<Partial<NeteaseBeeChanConfig>>) => {
+      state.config['netease-bee'] = { ...state.config['netease-bee'], ...action.payload };
     },
     setWecomConfig: (state, action: PayloadAction<Partial<WecomOpenClawConfig>>) => {
       state.config.wecom = { ...state.config.wecom, ...action.payload };
     },
     setPopoConfig: (state, action: PayloadAction<Partial<PopoOpenClawConfig>>) => {
       state.config.popo = { ...state.config.popo, ...action.payload };
+    },
+    setWeixinConfig: (state, action: PayloadAction<Partial<WeixinOpenClawConfig>>) => {
+      state.config.weixin = { ...state.config.weixin, ...action.payload };
     },
     setIMSettings: (state, action: PayloadAction<Partial<IMSettings>>) => {
       state.config.settings = { ...state.config.settings, ...action.payload };
@@ -100,9 +104,10 @@ export const {
   setQQConfig,
   setDiscordConfig,
   setNimConfig,
-  setXiaomifengConfig,
+  setNeteaseBeeChanConfig,
   setWecomConfig,
   setPopoConfig,
+  setWeixinConfig,
   setIMSettings,
   setStatus,
   setLoading,

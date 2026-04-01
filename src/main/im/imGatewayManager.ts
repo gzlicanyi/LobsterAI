@@ -1,13 +1,13 @@
 /**
  * IM Gateway Manager
- * Unified manager for DingTalk, Feishu, NIM, Xiaomifeng gateways
- * and Telegram, Discord, QQ, WeCom, POPO via OpenClaw
+ * Unified manager for DingTalk, Feishu, NIM gateways
+ * and Telegram, Discord, QQ, WeCom, Weixin, POPO, NeteaseBee via OpenClaw
  */
 
 import { EventEmitter } from 'events';
 import * as path from 'path';
+import { t } from '../i18n';
 import { NimGateway } from './nimGateway';
-import { XiaomifengGateway } from './xiaomifengGateway';
 import { IMChatHandler } from './imChatHandler';
 import { IMCoworkHandler } from './imCoworkHandler';
 import { IMStore } from './imStore';
@@ -27,7 +27,7 @@ import { fetchJsonWithTimeout } from './http';
 import {
   IMGatewayConfig,
   IMGatewayStatus,
-  IMPlatform,
+  Platform,
   IMMessage,
   IMConnectivityCheck,
   IMConnectivityTestResult,
@@ -36,6 +36,7 @@ import {
 import type { Database } from 'sql.js';
 import type { CoworkRuntime } from '../libs/agentEngine/types';
 import type { CoworkStore } from '../coworkStore';
+import { classifyErrorKey } from '../../common/coworkErrorClassify';
 const CONNECTIVITY_TIMEOUT_MS = 10_000;
 const INBOUND_ACTIVITY_WARN_AFTER_MS = 2 * 60 * 1000;
 
@@ -83,7 +84,6 @@ export interface IMGatewayManagerOptions {
 
 export class IMGatewayManager extends EventEmitter {
   private nimGateway: NimGateway;
-  private xiaomifengGateway: XiaomifengGateway;
   private imStore: IMStore;
   private chatHandler: IMChatHandler | null = null;
   private coworkHandler: IMCoworkHandler | null = null;
@@ -118,7 +118,6 @@ export class IMGatewayManager extends EventEmitter {
 
     this.imStore = new IMStore(db, saveDb);
     this.nimGateway = new NimGateway();
-    this.xiaomifengGateway = new XiaomifengGateway();
 
     // Store Cowork dependencies if provided
     if (options?.coworkRuntime && options?.coworkStore) {
@@ -146,27 +145,13 @@ export class IMGatewayManager extends EventEmitter {
 
     // NIM runs via OpenClaw; no direct gateway events to forward
 
-    // Xiaomifeng events
-    this.xiaomifengGateway.on('status', () => {
-      this.emit('statusChange', this.getStatus());
-    });
-    this.xiaomifengGateway.on('connected', () => {
-      this.emit('statusChange', this.getStatus());
-    });
-    this.xiaomifengGateway.on('disconnected', () => {
-      this.emit('statusChange', this.getStatus());
-    });
-    this.xiaomifengGateway.on('error', (error) => {
-      this.emit('error', { platform: 'xiaomifeng', error });
-      this.emit('statusChange', this.getStatus());
-    });
-    this.xiaomifengGateway.on('message', (message: IMMessage) => {
-      this.emit('message', message);
-    });
+    // netease-bee runs via OpenClaw; no direct gateway events to forward
 
     // QQ runs via OpenClaw; no direct gateway events to forward
 
     // WeCom runs via OpenClaw; no direct gateway events to forward
+
+    // Weixin runs via OpenClaw; no direct gateway events to forward
 
     // POPO runs via OpenClaw; no direct gateway events to forward
   }
@@ -182,14 +167,13 @@ export class IMGatewayManager extends EventEmitter {
 
     // NIM runs via OpenClaw; no direct reconnect needed
 
-    if (this.xiaomifengGateway && !this.xiaomifengGateway.isConnected()) {
-      console.log('[IMGatewayManager] Reconnecting Xiaomifeng...');
-      this.xiaomifengGateway.reconnectIfNeeded();
-    }
+    // netease-bee runs via OpenClaw; no direct reconnect needed
 
     // QQ runs via OpenClaw; no direct reconnection needed
 
     // WeCom runs via OpenClaw; no direct reconnection needed
+
+    // Weixin runs via OpenClaw; no direct reconnection needed
 
     // POPO runs via OpenClaw; no direct reconnection needed
   }
@@ -251,7 +235,9 @@ export class IMGatewayManager extends EventEmitter {
         }
         // Send error message to user
         try {
-          await replyFn(`处理消息时出错: ${error.message}`);
+          const errorKey = classifyErrorKey(error.message);
+          const friendlyMessage = errorKey ? t(errorKey) : error.message;
+          await replyFn(`${t('imErrorPrefix')}: ${friendlyMessage}`);
         } catch (replyError) {
           console.error(`[IMGatewayManager] Failed to send error reply: ${replyError}`);
         }
@@ -259,19 +245,19 @@ export class IMGatewayManager extends EventEmitter {
     };
 
     this.nimGateway.setMessageCallback(messageHandler);
-    this.xiaomifengGateway.setMessageCallback(messageHandler);
   }
 
   /**
    * Persist the notification target for a platform after receiving a message.
    */
-  private persistNotificationTarget(platform: IMPlatform): void {
+  private persistNotificationTarget(platform: Platform): void {
     try {
       let target: any = null;
       if (platform === 'nim') {
         target = this.nimGateway.getNotificationTarget();
       }
       // WeCom runs via OpenClaw; notification target not managed locally
+      // Weixin runs via OpenClaw; notification target not managed locally
       // POPO runs via OpenClaw; notification target not managed locally
       if (target != null) {
         this.imStore.setNotificationTarget(platform, target);
@@ -284,7 +270,7 @@ export class IMGatewayManager extends EventEmitter {
   /**
    * Restore notification target from SQLite after gateway starts.
    */
-  private restoreNotificationTarget(platform: IMPlatform): void {
+  private restoreNotificationTarget(platform: Platform): void {
     try {
       const target = this.imStore.getNotificationTarget(platform);
       if (target == null) return;
@@ -293,6 +279,7 @@ export class IMGatewayManager extends EventEmitter {
         this.nimGateway.setNotificationTarget(target);
       }
       // WeCom runs via OpenClaw; notification target not managed locally
+      // Weixin runs via OpenClaw; notification target not managed locally
       // POPO runs via OpenClaw; notification target not managed locally
       console.log(`[IMGatewayManager] Restored notification target for ${platform}`);
     } catch (err: any) {
@@ -374,31 +361,17 @@ export class IMGatewayManager extends EventEmitter {
     // Feishu now runs via OpenClaw; config sync is handled by IPC handler
 
 
-    // Hot-update Xiaomifeng config: restart if credential fields changed.
-    // Only perform hot-restart when syncGateway is explicitly true (i.e. user clicked Save).
-    if (options?.syncGateway && config.xiaomifeng && this.xiaomifengGateway) {
-      const oldXmf = previousConfig.xiaomifeng;
-      const newXmf = { ...oldXmf, ...config.xiaomifeng };
+    // Hot-update netease-bee config: sync OpenClaw config when credentials change.
+    // Only perform sync when syncGateway is explicitly true (i.e. user clicked Save).
+    if (options?.syncGateway && config['netease-bee']) {
+      const oldNb = previousConfig['netease-bee'];
+      const newNb = { ...oldNb, ...config['netease-bee'] };
       const credentialsChanged =
-        newXmf.clientId !== oldXmf.clientId ||
-        newXmf.secret !== oldXmf.secret;
-      const gatewayShouldBeActive =
-        Boolean(newXmf.enabled && newXmf.clientId && newXmf.secret);
-
-      // Check if gateway is connected OR actively reconnecting (has pending timer)
-      const isActiveOrReconnecting = this.xiaomifengGateway.isRunning() || this.xiaomifengGateway.isReconnecting();
-      if (credentialsChanged && gatewayShouldBeActive) {
-        if (isActiveOrReconnecting) {
-          console.log('[IMGatewayManager] Xiaomifeng credentials changed, restarting gateway...');
-          this.restartGateway('xiaomifeng').catch((err) => {
-            console.error('[IMGatewayManager] Failed to restart Xiaomifeng after config change:', err.message);
-          });
-        } else {
-          console.log('[IMGatewayManager] Xiaomifeng credentials changed, starting gateway...');
-          this.startGateway('xiaomifeng').catch((err) => {
-            console.error('[IMGatewayManager] Failed to start Xiaomifeng after config change:', err.message);
-          });
-        }
+        newNb.clientId !== oldNb?.clientId ||
+        newNb.secret !== oldNb?.secret;
+      if (credentialsChanged) {
+        console.log('[IMGatewayManager] netease-bee credentials changed, syncing OpenClaw config...');
+        this.syncOpenClawConfig?.();
       }
     }
 
@@ -406,11 +379,13 @@ export class IMGatewayManager extends EventEmitter {
 
     // WeCom runs via OpenClaw; config changes are synced via OpenClawConfigSync
 
+    // Weixin runs via OpenClaw; config changes are synced via OpenClawConfigSync
+
     // POPO runs via OpenClaw; config changes are synced via OpenClawConfigSync
 
   }
 
-  private async restartGateway(platform: IMPlatform): Promise<void> {
+  private async restartGateway(platform: Platform): Promise<void> {
     console.log(`[IMGatewayManager] Restarting ${platform} gateway...`);
     await this.stopGateway(platform);
     await this.startGateway(platform);
@@ -483,7 +458,17 @@ export class IMGatewayManager extends EventEmitter {
           lastOutboundAt: null as number | null,
         };
       })(),
-      xiaomifeng: this.xiaomifengGateway.getStatus(),
+      'netease-bee': (() => {
+        const beeConfig = config['netease-bee'];
+        return {
+          connected: Boolean(beeConfig?.enabled && beeConfig?.clientId && beeConfig?.secret),
+          startedAt: null as number | null,
+          lastError: null as string | null,
+          botAccount: null as string | null,
+          lastInboundAt: null as number | null,
+          lastOutboundAt: null as number | null,
+        };
+      })(),
       wecom: {
         connected: Boolean(config.wecom?.enabled && config.wecom.botId && config.wecom.secret),
         startedAt: null as number | null,
@@ -492,8 +477,15 @@ export class IMGatewayManager extends EventEmitter {
         lastInboundAt: null as number | null,
         lastOutboundAt: null as number | null,
       },
+      weixin: {
+        connected: Boolean(config.weixin?.enabled && config.weixin?.accountId),
+        startedAt: null as number | null,
+        lastError: null as string | null,
+        lastInboundAt: null as number | null,
+        lastOutboundAt: null as number | null,
+      },
       popo: {
-        connected: Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.token && config.popo.aesKey),
+        connected: Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token)),
         startedAt: null as number | null,
         lastError: null as string | null,
         lastInboundAt: null as number | null,
@@ -503,7 +495,7 @@ export class IMGatewayManager extends EventEmitter {
   }
 
   async testGateway(
-    platform: IMPlatform,
+    platform: Platform,
     configOverride?: Partial<IMGatewayConfig>
   ): Promise<IMConnectivityTestResult> {
     // Telegram always uses OpenClaw mode
@@ -535,6 +527,11 @@ export class IMGatewayManager extends EventEmitter {
       return this.testWecomOpenClawConnectivity(configOverride);
     }
 
+    // Weixin always uses OpenClaw mode
+    if (platform === 'weixin') {
+      return this.testWeixinOpenClawConnectivity(configOverride);
+    }
+
     // POPO always uses OpenClaw mode
     if (platform === 'popo') {
       return this.testPopoOpenClawConnectivity(configOverride);
@@ -553,8 +550,8 @@ export class IMGatewayManager extends EventEmitter {
       addCheck({
         code: 'missing_credentials',
         level: 'fail',
-        message: `缺少必要配置项: ${missingCredentials.join(', ')}`,
-        suggestion: '请补全配置后重新测试连通性。',
+        message: t('imMissingCredentials', { fields: missingCredentials.join(', ') }),
+        suggestion: t('imFillCredentials'),
       });
 
       return {
@@ -569,7 +566,7 @@ export class IMGatewayManager extends EventEmitter {
       const authMessage = await this.withTimeout(
         this.runAuthProbe(platform, config),
         CONNECTIVITY_TIMEOUT_MS,
-        '鉴权探测超时'
+        t('imAuthProbeTimeout')
       );
       addCheck({
         code: 'auth_check',
@@ -580,8 +577,8 @@ export class IMGatewayManager extends EventEmitter {
       addCheck({
         code: 'auth_check',
         level: 'fail',
-        message: `鉴权失败: ${error.message}`,
-        suggestion: '请检查 ID/Secret/Token 是否正确，且机器人权限已开通。',
+        message: t('imAuthFailed', { error: error.message }),
+        suggestion: t('imAuthFailedSuggestion'),
       });
       return {
         platform,
@@ -599,15 +596,15 @@ export class IMGatewayManager extends EventEmitter {
       addCheck({
         code: 'gateway_running',
         level: 'warn',
-        message: 'IM 渠道已启用但当前未连接。',
-        suggestion: '请检查网络、机器人配置和平台侧事件开关。',
+        message: t('imChannelEnabledNotConnected'),
+        suggestion: t('imChannelEnabledNotConnectedSuggestion'),
       });
     } else {
       addCheck({
         code: 'gateway_running',
         level: connected ? 'pass' : 'info',
-        message: connected ? 'IM 渠道已启用且运行正常。' : 'IM 渠道当前未启用。',
-        suggestion: connected ? undefined : '请点击对应 IM 渠道胶囊按钮启用该渠道。',
+        message: connected ? t('imChannelRunning') : t('imChannelNotEnabled'),
+        suggestion: connected ? undefined : t('imChannelNotEnabledSuggestion'),
       });
     }
 
@@ -620,21 +617,21 @@ export class IMGatewayManager extends EventEmitter {
         addCheck({
           code: 'inbound_activity',
           level: 'warn',
-          message: '已连接超过 2 分钟，但尚未收到任何入站消息。',
-          suggestion: '请确认机器人已在目标会话中，或按平台规则 @机器人 触发消息。',
+          message: t('imNoInboundAfter2Min'),
+          suggestion: t('imNoInboundSuggestion'),
         });
       } else {
         addCheck({
           code: 'inbound_activity',
           level: 'pass',
-          message: '已检测到入站消息。',
+          message: t('imInboundDetected'),
         });
       }
     } else if (connected) {
       addCheck({
         code: 'inbound_activity',
         level: 'info',
-        message: '网关刚启动，入站活动检查将在 2 分钟后更准确。',
+        message: t('imGatewayJustStarted'),
       });
     }
 
@@ -643,21 +640,21 @@ export class IMGatewayManager extends EventEmitter {
         addCheck({
           code: 'outbound_activity',
           level: 'warn',
-          message: '已收到消息，但尚未观察到成功回发。',
-          suggestion: '请检查消息发送权限、机器人可见范围和会话回包权限。',
+          message: t('imNoOutbound'),
+          suggestion: t('imNoOutboundSuggestion'),
         });
       } else {
         addCheck({
           code: 'outbound_activity',
           level: 'pass',
-          message: '已检测到成功回发消息。',
+          message: t('imOutboundDetected'),
         });
       }
     } else if (connected) {
       addCheck({
         code: 'outbound_activity',
         level: 'info',
-        message: '尚未收到可用于评估回发能力的入站消息。',
+        message: t('imNoInboundForOutboundCheck'),
       });
     }
 
@@ -666,10 +663,10 @@ export class IMGatewayManager extends EventEmitter {
       addCheck({
         code: 'platform_last_error',
         level: connected ? 'warn' : 'fail',
-        message: `最近错误: ${lastError}`,
+        message: t('imRecentError', { error: lastError }),
         suggestion: connected
-          ? '当前已连接，但建议修复该错误避免后续中断。'
-          : '该错误可能阻断对话，请优先修复后重试。',
+          ? t('imRecentErrorConnectedSuggestion')
+          : t('imRecentErrorDisconnectedSuggestion'),
       });
     }
 
@@ -677,8 +674,8 @@ export class IMGatewayManager extends EventEmitter {
       addCheck({
         code: 'qq_guild_mention_hint',
         level: 'info',
-        message: 'QQ 通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
-        suggestion: '频道中需 @机器人 触发对话，也支持私信和群聊。',
+        message: t('imQqOpenClawHint'),
+        suggestion: t('imQqMentionHint'),
       });
     }
 
@@ -691,7 +688,7 @@ export class IMGatewayManager extends EventEmitter {
   }
 
   // ==================== Gateway Control ====================
-  async startGateway(platform: IMPlatform): Promise<void> {
+  async startGateway(platform: Platform): Promise<void> {
     const config = this.getConfig();
 
     // Ensure chat handler is ready
@@ -728,8 +725,12 @@ export class IMGatewayManager extends EventEmitter {
       await this.syncOpenClawConfig?.();
       await this.ensureOpenClawGatewayConnected?.();
       return;
-    } else if (platform === 'xiaomifeng') {
-      await this.xiaomifengGateway.start(config.xiaomifeng);
+    } else if (platform === 'netease-bee') {
+      // netease-bee runs via OpenClaw gateway
+      console.log('[IMGatewayManager] netease-bee in OpenClaw mode, syncing config instead of starting direct gateway');
+      await this.syncOpenClawConfig?.();
+      await this.ensureOpenClawGatewayConnected?.();
+      return;
     } else if (platform === 'qq') {
       // QQ runs via OpenClaw gateway (qqbot plugin)
       console.log('[IMGatewayManager] QQ in OpenClaw mode, syncing config instead of starting direct gateway');
@@ -739,6 +740,12 @@ export class IMGatewayManager extends EventEmitter {
     } else if (platform === 'wecom') {
       // WeCom runs via OpenClaw gateway (wecom-openclaw-plugin)
       console.log('[IMGatewayManager] WeCom in OpenClaw mode, syncing config instead of starting direct gateway');
+      await this.syncOpenClawConfig?.();
+      await this.ensureOpenClawGatewayConnected?.();
+      return;
+    } else if (platform === 'weixin') {
+      // Weixin runs via OpenClaw gateway (weixin-openclaw-plugin)
+      console.debug('[IMGatewayManager] Weixin in OpenClaw mode, syncing config instead of starting direct gateway');
       await this.syncOpenClawConfig?.();
       await this.ensureOpenClawGatewayConnected?.();
       return;
@@ -754,7 +761,7 @@ export class IMGatewayManager extends EventEmitter {
     this.restoreNotificationTarget(platform);
   }
 
-  async stopGateway(platform: IMPlatform): Promise<void> {
+  async stopGateway(platform: Platform): Promise<void> {
     if (platform === 'dingtalk') {
       // DingTalk runs via OpenClaw gateway
       console.log('[IMGatewayManager] DingTalk in OpenClaw mode, syncing disabled config');
@@ -780,8 +787,11 @@ export class IMGatewayManager extends EventEmitter {
       console.log('[IMGatewayManager] NIM in OpenClaw mode, syncing disabled config');
       await this.syncOpenClawConfig?.();
       return;
-    } else if (platform === 'xiaomifeng') {
-      await this.xiaomifengGateway.stop();
+    } else if (platform === 'netease-bee') {
+      // netease-bee runs via OpenClaw gateway
+      console.log('[IMGatewayManager] netease-bee in OpenClaw mode, syncing disabled config');
+      await this.syncOpenClawConfig?.();
+      return;
     } else if (platform === 'qq') {
       // QQ runs via OpenClaw gateway
       console.log('[IMGatewayManager] QQ in OpenClaw mode, syncing disabled config');
@@ -790,6 +800,11 @@ export class IMGatewayManager extends EventEmitter {
     } else if (platform === 'wecom') {
       // WeCom runs via OpenClaw gateway
       console.log('[IMGatewayManager] WeCom in OpenClaw mode, syncing disabled config');
+      await this.syncOpenClawConfig?.();
+      return;
+    } else if (platform === 'weixin') {
+      // Weixin runs via OpenClaw gateway
+      console.debug('[IMGatewayManager] Weixin in OpenClaw mode, syncing disabled config');
       await this.syncOpenClawConfig?.();
       return;
     } else if (platform === 'popo') {
@@ -803,7 +818,7 @@ export class IMGatewayManager extends EventEmitter {
   /**
    * Start all enabled gateways.
    *
-   * OpenClaw platforms (dingtalk/feishu/telegram/discord/qq/wecom/popo/nim) are batched
+   * OpenClaw platforms (dingtalk/feishu/telegram/discord/qq/wecom/weixin/popo/nim) are batched
    * so that `syncOpenClawConfig` + `ensureOpenClawGatewayConnected` are called
    * only **once** regardless of how many OpenClaw platforms are enabled.
    * This avoids N serial gateway restarts which cause message loss, Telegram
@@ -815,19 +830,9 @@ export class IMGatewayManager extends EventEmitter {
     // Ensure chat handler is ready (called once instead of per-platform)
     this.updateChatHandler();
 
-    // --- Non-OpenClaw platforms: start independently ---
-
-    if (config.xiaomifeng?.enabled && config.xiaomifeng?.clientId && config.xiaomifeng?.secret) {
-      try {
-        await this.startGateway('xiaomifeng');
-      } catch (error: any) {
-        console.error(`[IMGatewayManager] Failed to start Xiaomifeng: ${error.message}`);
-      }
-    }
-
     // --- OpenClaw platforms: collect and batch into a single sync ---
 
-    const openClawPlatformsToStart: IMPlatform[] = [];
+    const openClawPlatformsToStart: Platform[] = [];
 
     if (config.dingtalk.enabled && config.dingtalk.clientId && config.dingtalk.clientSecret) {
       openClawPlatformsToStart.push('dingtalk');
@@ -847,11 +852,17 @@ export class IMGatewayManager extends EventEmitter {
     if (config.wecom?.enabled && config.wecom?.botId && config.wecom?.secret) {
       openClawPlatformsToStart.push('wecom');
     }
-    if (config.popo?.enabled && config.popo?.appKey && config.popo?.appSecret && config.popo?.token && config.popo?.aesKey) {
+    if (config.weixin?.enabled) {
+      openClawPlatformsToStart.push('weixin');
+    }
+    if (config.popo?.enabled && config.popo?.appKey && config.popo?.appSecret && config.popo?.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token)) {
       openClawPlatformsToStart.push('popo');
     }
     if (config.nim?.enabled && config.nim.appKey && config.nim.account && config.nim.token) {
       openClawPlatformsToStart.push('nim');
+    }
+    if (config['netease-bee']?.enabled && config['netease-bee']?.clientId && config['netease-bee']?.secret) {
+      openClawPlatformsToStart.push('netease-bee');
     }
 
     if (openClawPlatformsToStart.length > 0) {
@@ -866,16 +877,14 @@ export class IMGatewayManager extends EventEmitter {
   }
 
   async stopAll(): Promise<void> {
-    await Promise.all([
-      this.xiaomifengGateway.stop(),
-    ]);
+    // All platforms run via OpenClaw; nothing to stop directly
   }
 
   isAnyConnected(): boolean {
-    return this.xiaomifengGateway.isConnected();
+    return false;
   }
 
-  isConnected(platform: IMPlatform): boolean {
+  isConnected(platform: Platform): boolean {
     if (platform === 'dingtalk') {
       // DingTalk runs via OpenClaw; consider it connected when enabled and configured
       const config = this.getConfig();
@@ -896,8 +905,10 @@ export class IMGatewayManager extends EventEmitter {
       const config = this.getConfig();
       return Boolean(config.nim?.enabled && config.nim.appKey && config.nim.account && config.nim.token);
     }
-    if (platform === 'xiaomifeng') {
-      return this.xiaomifengGateway.isConnected();
+    if (platform === 'netease-bee') {
+      // netease-bee runs via OpenClaw; status comes from OpenClaw
+      const config = this.getConfig();
+      return Boolean(config['netease-bee']?.enabled && config['netease-bee']?.clientId && config['netease-bee']?.secret);
     }
     if (platform === 'qq') {
       // QQ runs via OpenClaw; consider it connected when enabled and configured
@@ -909,15 +920,19 @@ export class IMGatewayManager extends EventEmitter {
       const config = this.getConfig();
       return Boolean(config.wecom?.enabled && config.wecom.botId && config.wecom.secret);
     }
+    if (platform === 'weixin') {
+      const config = this.getConfig();
+      return Boolean(config.weixin?.enabled && config.weixin?.accountId);
+    }
     if (platform === 'popo') {
       // POPO runs via OpenClaw; consider it connected when enabled and configured
       const config = this.getConfig();
-      return Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.token && config.popo.aesKey);
+      return Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token));
     }
     return false;
   }
 
-  async sendNotification(platform: IMPlatform, text: string): Promise<boolean> {
+  async sendNotification(platform: Platform, text: string): Promise<boolean> {
     if (!this.isConnected(platform)) {
       console.warn(`[IMGatewayManager] Cannot send notification: ${platform} is not connected`);
       return false;
@@ -933,11 +948,15 @@ export class IMGatewayManager extends EventEmitter {
       } else if (platform === 'wecom') {
         // WeCom runs via OpenClaw; notifications are handled by the wecom-openclaw-plugin
         console.log('[IMGatewayManager] WeCom notification via OpenClaw not yet supported');
+      } else if (platform === 'weixin') {
+        // Weixin runs via OpenClaw; notifications are handled by the weixin-openclaw-plugin
+        console.debug('[IMGatewayManager] Weixin notification via OpenClaw not yet supported');
       } else if (platform === 'popo') {
         // POPO runs via OpenClaw; notifications are handled by the moltbot-popo plugin
         console.log('[IMGatewayManager] POPO notification via OpenClaw not yet supported');
-      } else if (platform === 'xiaomifeng') {
-        await this.xiaomifengGateway.sendNotification(text);
+      } else if (platform === 'netease-bee') {
+        // netease-bee runs via OpenClaw; notifications not yet supported
+        console.log('[IMGatewayManager] netease-bee notification via OpenClaw not yet supported');
       }
       return true;
     } catch (error: any) {
@@ -946,7 +965,7 @@ export class IMGatewayManager extends EventEmitter {
     }
   }
 
-  async sendNotificationWithMedia(platform: IMPlatform, text: string): Promise<boolean> {
+  async sendNotificationWithMedia(platform: Platform, text: string): Promise<boolean> {
     if (!this.isConnected(platform)) {
       console.warn(`[IMGatewayManager] Cannot send notification: ${platform} is not connected`);
       return false;
@@ -962,11 +981,15 @@ export class IMGatewayManager extends EventEmitter {
       } else if (platform === 'wecom') {
         // WeCom runs via OpenClaw; notifications are handled by the wecom-openclaw-plugin
         console.log('[IMGatewayManager] WeCom notification with media via OpenClaw not yet supported');
+      } else if (platform === 'weixin') {
+        // Weixin runs via OpenClaw; notifications are handled by the weixin-openclaw-plugin
+        console.debug('[IMGatewayManager] Weixin notification with media via OpenClaw not yet supported');
       } else if (platform === 'popo') {
         // POPO runs via OpenClaw; notifications are handled by the moltbot-popo plugin
         console.log('[IMGatewayManager] POPO notification with media via OpenClaw not yet supported');
-      } else if (platform === 'xiaomifeng') {
-        await this.xiaomifengGateway.sendNotificationWithMedia(text);
+      } else if (platform === 'netease-bee') {
+        // netease-bee runs via OpenClaw; notifications not yet supported
+        console.log('[IMGatewayManager] netease-bee notification via OpenClaw not yet supported');
       }
       return true;
     } catch (error: any) {
@@ -980,7 +1003,7 @@ export class IMGatewayManager extends EventEmitter {
   ): Promise<IMConnectivityTestResult> {
     const checks: IMConnectivityCheck[] = [];
     const testedAt = Date.now();
-    const platform: IMPlatform = 'telegram';
+    const platform: Platform = 'telegram';
 
     // Resolve the Telegram config (now TelegramOpenClawConfig type)
     const mergedConfig = this.buildMergedConfig(configOverride);
@@ -992,8 +1015,8 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'missing_credentials',
         level: 'fail',
-        message: '缺少必要配置项: botToken',
-        suggestion: '请补全 Bot Token 后重新测试连通性。',
+        message: t('imTelegramMissingBotToken'),
+        suggestion: t('imTelegramFillBotToken'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1007,20 +1030,20 @@ export class IMGatewayManager extends EventEmitter {
           CONNECTIVITY_TIMEOUT_MS
         ),
         CONNECTIVITY_TIMEOUT_MS,
-        '鉴权探测超时'
+        t('imAuthProbeTimeout')
       );
       if (response?.ok && response.result?.username) {
         checks.push({
           code: 'auth_check',
           level: 'pass',
-          message: `Telegram Bot 鉴权通过: @${response.result.username}`,
+          message: t('imTelegramAuthPassed', { username: response.result.username }),
         });
       } else {
         checks.push({
           code: 'auth_check',
           level: 'fail',
-          message: `Telegram Bot 鉴权失败: ${response?.description || '未知错误'}`,
-          suggestion: '请检查 Bot Token 是否正确。',
+          message: t('imTelegramAuthFailed', { error: response?.description || t('imTelegramAuthFailedUnknown') }),
+          suggestion: t('imTelegramCheckToken'),
         });
         return { platform, testedAt, verdict: 'fail', checks };
       }
@@ -1028,8 +1051,8 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: `Telegram Bot 鉴权失败: ${error.message}`,
-        suggestion: '请检查 Bot Token 是否正确，且网络通畅。',
+        message: t('imTelegramAuthFailed', { error: error.message }),
+        suggestion: t('imTelegramCheckTokenNetwork'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1038,7 +1061,7 @@ export class IMGatewayManager extends EventEmitter {
     checks.push({
       code: 'gateway_running',
       level: 'info',
-      message: 'Telegram 通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+      message: t('imTelegramOpenClawHint'),
     });
 
     const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
@@ -1055,7 +1078,7 @@ export class IMGatewayManager extends EventEmitter {
   ): Promise<IMConnectivityTestResult> {
     const checks: IMConnectivityCheck[] = [];
     const testedAt = Date.now();
-    const platform: IMPlatform = 'discord';
+    const platform: Platform = 'discord';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
     const dcConfig = mergedConfig.discord;
@@ -1066,8 +1089,8 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'missing_credentials',
         level: 'fail',
-        message: '缺少必要配置项: botToken',
-        suggestion: '请补全 Bot Token 后重新测试连通性。',
+        message: t('imDiscordMissingBotToken'),
+        suggestion: t('imDiscordFillBotToken'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1081,7 +1104,7 @@ export class IMGatewayManager extends EventEmitter {
           CONNECTIVITY_TIMEOUT_MS
         ),
         CONNECTIVITY_TIMEOUT_MS,
-        '鉴权探测超时'
+        t('imAuthProbeTimeout')
       );
       const username = response?.username
         ? `${response.username}${response.discriminator && response.discriminator !== '0' ? `#${response.discriminator}` : ''}`
@@ -1089,14 +1112,14 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'auth_check',
         level: 'pass',
-        message: `Discord Bot 鉴权通过（Bot: ${username}）。`,
+        message: t('imDiscordAuthPassed', { username }),
       });
     } catch (error: any) {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: `Discord Bot 鉴权失败: ${error.message}`,
-        suggestion: '请检查 Bot Token 是否正确，且网络通畅。',
+        message: t('imDiscordAuthFailed', { error: error.message }),
+        suggestion: t('imDiscordCheckTokenNetwork'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1105,14 +1128,14 @@ export class IMGatewayManager extends EventEmitter {
     checks.push({
       code: 'gateway_running',
       level: 'info',
-      message: 'Discord 通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+      message: t('imDiscordOpenClawHint'),
     });
 
     // Check 4: Group mention hint
     checks.push({
       code: 'discord_group_requires_mention',
       level: 'info',
-      message: 'Discord 群聊中仅响应 @机器人的消息。',
+      message: t('imDiscordGroupMention'),
     });
 
     const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
@@ -1129,7 +1152,7 @@ export class IMGatewayManager extends EventEmitter {
   ): Promise<IMConnectivityTestResult> {
     const checks: IMConnectivityCheck[] = [];
     const testedAt = Date.now();
-    const platform: IMPlatform = 'feishu';
+    const platform: Platform = 'feishu';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
     const fsConfig = mergedConfig.feishu;
@@ -1142,8 +1165,8 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'missing_credentials',
         level: 'fail',
-        message: `缺少必要配置项: ${missing.join(', ')}`,
-        suggestion: '请补全 App ID 和 App Secret 后重新测试连通性。',
+        message: t('imMissingCredentials', { fields: missing.join(', ') }),
+        suggestion: t('imFeishuFillAppIdSecret'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1169,14 +1192,14 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'auth_check',
         level: 'pass',
-        message: `飞书鉴权通过（Bot: ${botName}）`,
+        message: t('imFeishuAuthPassed', { botName }),
       });
     } catch (error: any) {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: `飞书鉴权失败: ${error.message}`,
-        suggestion: '请检查 App ID 和 App Secret 是否正确。',
+        message: t('imFeishuAuthFailed', { error: error.message }),
+        suggestion: t('imFeishuCheckAppIdSecret'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1185,23 +1208,23 @@ export class IMGatewayManager extends EventEmitter {
     checks.push({
       code: 'gateway_running',
       level: 'info',
-      message: '飞书通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+      message: t('imFeishuOpenClawHint'),
     });
 
     // Check 4: Group mention hint
     checks.push({
       code: 'feishu_group_requires_mention',
       level: 'info',
-      message: '飞书群聊中仅响应 @机器人的消息。',
-      suggestion: '请在群聊中使用 @机器人 + 内容触发对话。',
+      message: t('imFeishuGroupMention'),
+      suggestion: t('imFeishuGroupMentionSuggestion'),
     });
 
     // Check 5: Event subscription hint
     checks.push({
       code: 'feishu_event_subscription_required',
       level: 'info',
-      message: '飞书需要开启消息事件订阅（im.message.receive_v1）才能收消息。',
-      suggestion: '请在飞书开发者后台确认事件订阅、权限和发布状态。',
+      message: t('imFeishuEventSubscription'),
+      suggestion: t('imFeishuEventSubscriptionSuggestion'),
     });
 
     const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
@@ -1218,7 +1241,7 @@ export class IMGatewayManager extends EventEmitter {
   ): Promise<IMConnectivityTestResult> {
     const checks: IMConnectivityCheck[] = [];
     const testedAt = Date.now();
-    const platform: IMPlatform = 'dingtalk';
+    const platform: Platform = 'dingtalk';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
     const dtConfig = mergedConfig.dingtalk;
@@ -1231,8 +1254,8 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'missing_credentials',
         level: 'fail',
-        message: `缺少必要配置项: ${missing.join(', ')}`,
-        suggestion: '请补全 Client ID 和 Client Secret 后重新测试连通性。',
+        message: t('imMissingCredentials', { fields: missing.join(', ') }),
+        suggestion: t('imDingtalkFillClientIdSecret'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1243,7 +1266,7 @@ export class IMGatewayManager extends EventEmitter {
       const resp = await this.withTimeout(
         fetchJsonWithTimeout<{ errcode?: number; errmsg?: string; access_token?: string }>(tokenUrl, {}, CONNECTIVITY_TIMEOUT_MS),
         CONNECTIVITY_TIMEOUT_MS,
-        '鉴权探测超时'
+        t('imAuthProbeTimeout')
       );
       if (resp.errcode && resp.errcode !== 0) {
         throw new Error(resp.errmsg || `errcode ${resp.errcode}`);
@@ -1251,14 +1274,14 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'auth_check',
         level: 'pass',
-        message: '钉钉鉴权通过。',
+        message: t('imDingtalkAuthPassed'),
       });
     } catch (error: any) {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: `钉钉鉴权失败: ${error.message}`,
-        suggestion: '请检查 Client ID 和 Client Secret 是否正确，且机器人权限已开通。',
+        message: t('imDingtalkAuthFailed', { error: error.message }),
+        suggestion: t('imDingtalkCheckClientIdSecret'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1267,15 +1290,15 @@ export class IMGatewayManager extends EventEmitter {
     checks.push({
       code: 'gateway_running',
       level: 'info',
-      message: '钉钉通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+      message: t('imDingtalkOpenClawHint'),
     });
 
     // Check 4: Bot membership hint
     checks.push({
       code: 'dingtalk_bot_membership_hint',
       level: 'info',
-      message: '钉钉机器人需被加入目标会话并具备发言权限。',
-      suggestion: '请确认机器人在目标会话中，且企业权限配置允许收发消息。',
+      message: t('imDingtalkBotMembership'),
+      suggestion: t('imDingtalkBotMembershipSuggestion'),
     });
 
     const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
@@ -1292,7 +1315,7 @@ export class IMGatewayManager extends EventEmitter {
   ): Promise<IMConnectivityTestResult> {
     const checks: IMConnectivityCheck[] = [];
     const testedAt = Date.now();
-    const platform: IMPlatform = 'wecom';
+    const platform: Platform = 'wecom';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
     const wcConfig = mergedConfig.wecom;
@@ -1305,8 +1328,8 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'missing_credentials',
         level: 'fail',
-        message: `缺少必要配置项: ${missing.join(', ')}`,
-        suggestion: '请补全 Bot ID 和 Secret 后重新测试连通性。',
+        message: t('imMissingCredentials', { fields: missing.join(', ') }),
+        suggestion: t('imWecomFillBotIdSecret'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1315,14 +1338,14 @@ export class IMGatewayManager extends EventEmitter {
     checks.push({
       code: 'auth_check',
       level: 'pass',
-      message: `企业微信配置已就绪（Bot ID: ${wcConfig.botId}）。`,
+      message: t('imWecomConfigReady', { botId: wcConfig.botId }),
     });
 
     // Check 3: OpenClaw Gateway running info
     checks.push({
       code: 'gateway_running',
       level: 'info',
-      message: '企业微信通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+      message: t('imWecomOpenClawHint'),
     });
 
     const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
@@ -1334,12 +1357,116 @@ export class IMGatewayManager extends EventEmitter {
     return { platform, testedAt, verdict, checks };
   }
 
+  private async testWeixinOpenClawConnectivity(
+    configOverride?: Partial<IMGatewayConfig>
+  ): Promise<IMConnectivityTestResult> {
+    const checks: IMConnectivityCheck[] = [];
+    const testedAt = Date.now();
+    const platform: Platform = 'weixin';
+
+    const mergedConfig = this.buildMergedConfig(configOverride);
+    const wxConfig = mergedConfig.weixin;
+
+    // Weixin has no credentials; just check if enabled
+    if (!wxConfig?.enabled) {
+      checks.push({
+        code: 'gateway_running',
+        level: 'info',
+        message: t('imWeixinNotEnabled'),
+        suggestion: t('imWeixinEnableSuggestion'),
+      });
+      return { platform, testedAt, verdict: 'pass', checks };
+    }
+
+    // Config completeness passes (no credentials needed)
+    checks.push({
+      code: 'auth_check',
+      level: 'pass',
+      message: t('imWeixinConfigReady'),
+    });
+
+    // OpenClaw Gateway running info
+    checks.push({
+      code: 'gateway_running',
+      level: 'info',
+      message: t('imWeixinOpenClawHint'),
+    });
+
+    const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
+      ? 'fail'
+      : checks.some(c => c.level === 'warn')
+        ? 'warn'
+        : 'pass';
+
+    return { platform, testedAt, verdict, checks };
+  }
+
+  /**
+   * Start Weixin QR code login via OpenClaw Gateway RPC.
+   * Returns the QR code data URL and a session key for polling.
+   */
+  async weixinQrLoginStart(): Promise<{ qrDataUrl?: string; message: string; sessionKey?: string }> {
+    const client = this.getOpenClawGatewayClient?.();
+    if (!client) {
+      await this.ensureOpenClawGatewayReady?.();
+      const retryClient = this.getOpenClawGatewayClient?.();
+      if (!retryClient) {
+        return { message: 'OpenClaw Gateway is not running. Please start OpenClaw engine first.' };
+      }
+      return this.doWeixinQrLoginStart(retryClient);
+    }
+    return this.doWeixinQrLoginStart(client);
+  }
+
+  private async doWeixinQrLoginStart(client: GatewayClientLike): Promise<{ qrDataUrl?: string; message: string; sessionKey?: string }> {
+    try {
+      const result = await client.request<{ qrDataUrl?: string; message: string; sessionKey?: string }>(
+        'web.login.start',
+        { force: true, timeoutMs: 300000, verbose: true },
+      );
+      console.log('[IMGatewayManager] Weixin QR login start result:', result.message);
+      return result;
+    } catch (err) {
+      console.error('[IMGatewayManager] Weixin QR login start failed:', err);
+      return { message: `Failed to start Weixin login: ${String(err)}` };
+    }
+  }
+
+  /**
+   * Wait for Weixin QR code scan completion via OpenClaw Gateway RPC.
+   */
+  async weixinQrLoginWait(accountId?: string): Promise<{ connected: boolean; message: string; accountId?: string }> {
+    const client = this.getOpenClawGatewayClient?.();
+    if (!client) {
+      return { connected: false, message: 'OpenClaw Gateway is not connected.' };
+    }
+    try {
+      const result = await client.request<{ connected: boolean; message: string; accountId?: string }>(
+        'web.login.wait',
+        { timeoutMs: 480000, ...(accountId ? { accountId } : {}) },
+      );
+      console.log('[IMGatewayManager] Weixin QR login wait result:', result.message, 'connected:', result.connected);
+      if (result.connected) {
+        // Sync config and restart gateway so the weixin channel starts with
+        // the newly saved account credentials. The gateway's web.login.wait
+        // handler called context.startChannel, but the channel may not fully
+        // initialize without a proper config-driven restart.
+        await this.syncOpenClawConfig?.();
+        await this.ensureOpenClawGatewayConnected?.();
+      }
+      return result;
+    } catch (err) {
+      console.error('[IMGatewayManager] Weixin QR login wait failed:', err);
+      return { connected: false, message: `Login failed: ${String(err)}` };
+    }
+  }
+
   private async testNimOpenClawConnectivity(
     configOverride?: Partial<IMGatewayConfig>
   ): Promise<IMConnectivityTestResult> {
     const checks: IMConnectivityCheck[] = [];
     const testedAt = Date.now();
-    const platform: IMPlatform = 'nim';
+    const platform: Platform = 'nim';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
     const nimConfig = mergedConfig.nim;
@@ -1352,8 +1479,8 @@ export class IMGatewayManager extends EventEmitter {
       checks.push({
         code: 'missing_credentials',
         level: 'fail',
-        message: `缺少必要配置项: ${missing.join(', ')}`,
-        suggestion: '请补全 AppKey、Account 和 Token 后重新测试连通性。',
+        message: t('imMissingCredentials', { fields: missing.join(', ') }),
+        suggestion: t('imNimFillCredentials'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1361,20 +1488,20 @@ export class IMGatewayManager extends EventEmitter {
     checks.push({
       code: 'auth_check',
       level: 'pass',
-      message: `云信配置已就绪（Account: ${nimConfig.account}）。`,
+      message: t('imNimConfigReady', { account: nimConfig.account }),
     });
 
     checks.push({
       code: 'gateway_running',
       level: 'info',
-      message: '云信通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+      message: t('imNimOpenClawHint'),
     });
 
     checks.push({
       code: 'nim_p2p_only_hint',
       level: 'info',
-      message: '云信 IM 当前仅支持 P2P（私聊）消息。',
-      suggestion: '请通过私聊方式向机器人账号发送消息触发对话。',
+      message: t('imNimP2pOnly'),
+      suggestion: t('imNimP2pOnlySuggestion'),
     });
 
     const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
@@ -1395,23 +1522,26 @@ export class IMGatewayManager extends EventEmitter {
   ): Promise<IMConnectivityTestResult> {
     const checks: IMConnectivityCheck[] = [];
     const testedAt = Date.now();
-    const platform: IMPlatform = 'popo';
+    const platform: Platform = 'popo';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
     const popoConfig = mergedConfig.popo;
 
     // Check 1: Credentials present
+    const isWebhookMode = (popoConfig?.connectionMode ?? 'websocket') === 'webhook';
     const missing: string[] = [];
     if (!popoConfig?.appKey) missing.push('appKey');
     if (!popoConfig?.appSecret) missing.push('appSecret');
-    if (!popoConfig?.token) missing.push('token');
+    if (isWebhookMode && !popoConfig?.token) missing.push('token');
     if (!popoConfig?.aesKey) missing.push('aesKey');
     if (missing.length > 0) {
       checks.push({
         code: 'missing_credentials',
         level: 'fail',
-        message: `缺少必要配置项: ${missing.join(', ')}`,
-        suggestion: '请补全 appKey、appSecret、token 和 aesKey 后重新测试连通性。',
+        message: t('imMissingCredentials', { fields: missing.join(', ') }),
+        suggestion: isWebhookMode
+          ? t('imPopoFillWebhookCredentials')
+          : t('imPopoFillWsCredentials'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
     }
@@ -1420,14 +1550,14 @@ export class IMGatewayManager extends EventEmitter {
     checks.push({
       code: 'auth_check',
       level: 'pass',
-      message: 'POPO 配置已就绪。',
+      message: t('imPopoConfigReady'),
     });
 
     // Check 3: OpenClaw Gateway running info
     checks.push({
       code: 'gateway_running',
       level: 'info',
-      message: 'POPO 通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+      message: t('imPopoOpenClawHint'),
     });
 
     const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
@@ -1455,14 +1585,15 @@ export class IMGatewayManager extends EventEmitter {
       telegram: { ...current.telegram, ...(configOverride.telegram || {}) },
       discord: { ...current.discord, ...(configOverride.discord || {}) },
       nim: { ...current.nim, ...(configOverride.nim || {}) },
-      xiaomifeng: { ...current.xiaomifeng, ...(configOverride.xiaomifeng || {}) },
+      'netease-bee': { ...current['netease-bee'], ...(configOverride['netease-bee'] || {}) },
       wecom: { ...current.wecom, ...(configOverride.wecom || {}) },
+      weixin: { ...current.weixin, ...(configOverride.weixin || {}) },
       popo: { ...current.popo, ...(configOverride.popo || {}) },
       settings: { ...current.settings, ...(configOverride.settings || {}) },
     };
   }
 
-  private getMissingCredentials(platform: IMPlatform, config: IMGatewayConfig): string[] {
+  private getMissingCredentials(platform: Platform, config: IMGatewayConfig): string[] {
     if (platform === 'dingtalk') {
       const fields: string[] = [];
       if (!config.dingtalk.clientId) fields.push('clientId');
@@ -1485,10 +1616,10 @@ export class IMGatewayManager extends EventEmitter {
       if (!config.nim.token) fields.push('token');
       return fields;
     }
-    if (platform === 'xiaomifeng') {
+    if (platform === 'netease-bee') {
       const fields: string[] = [];
-      if (!config.xiaomifeng?.clientId) fields.push('clientId');
-      if (!config.xiaomifeng?.secret) fields.push('secret');
+      if (!config['netease-bee']?.clientId) fields.push('clientId');
+      if (!config['netease-bee']?.secret) fields.push('secret');
       return fields;
     }
     if (platform === 'qq') {
@@ -1503,25 +1634,29 @@ export class IMGatewayManager extends EventEmitter {
       if (!config.wecom?.secret) fields.push('secret');
       return fields;
     }
+    if (platform === 'weixin') {
+      // Weixin has no credentials; nothing to check
+      return [];
+    }
     if (platform === 'popo') {
       const fields: string[] = [];
       if (!config.popo?.appKey) fields.push('appKey');
       if (!config.popo?.appSecret) fields.push('appSecret');
-      if (!config.popo?.token) fields.push('token');
+      if ((config.popo?.connectionMode ?? 'websocket') === 'webhook' && !config.popo?.token) fields.push('token');
       if (!config.popo?.aesKey) fields.push('aesKey');
       return fields;
     }
     return config.discord.botToken ? [] : ['botToken'];
   }
 
-  private async runAuthProbe(platform: IMPlatform, config: IMGatewayConfig): Promise<string> {
+  private async runAuthProbe(platform: Platform, config: IMGatewayConfig): Promise<string> {
     if (platform === 'dingtalk') {
       const tokenUrl = `https://oapi.dingtalk.com/gettoken?appkey=${encodeURIComponent(config.dingtalk.clientId)}&appsecret=${encodeURIComponent(config.dingtalk.clientSecret)}`;
       const resp = await fetchJsonWithTimeout<{ errcode?: number; errmsg?: string }>(tokenUrl, {}, CONNECTIVITY_TIMEOUT_MS);
       if (resp.errcode && resp.errcode !== 0) {
         throw new Error(resp.errmsg || `errcode ${resp.errcode}`);
       }
-      return '钉钉鉴权通过。';
+      return t('imDingtalkAuthPassed');
     }
 
     if (platform === 'feishu') {
@@ -1541,48 +1676,54 @@ export class IMGatewayManager extends EventEmitter {
         throw new Error(response.msg || `code ${response.code}`);
       }
       const botName = response.data?.app_name ?? response.data?.bot?.app_name ?? 'unknown';
-      return `飞书鉴权通过（Bot: ${botName}）。`;
+      return t('imFeishuAuthPassedWithBot', { botName });
     }
 
     if (platform === 'nim') {
       const { appKey, account, token } = config.nim;
       if (!appKey || !account || !token) {
-        throw new Error('配置不完整');
+        throw new Error(t('imConfigIncomplete'));
       }
-      return `云信配置已就绪（Account: ${account}）。`;
+      return t('imNimConfigReady', { account });
     }
 
-    if (platform === 'xiaomifeng') {
-      // 小蜜蜂使用网易云信 NIM SDK，鉴权是通过 SDK 登录验证的
-      // 这里我们只做配置完整性检查，实际登录验证在 start 时进行
-      const { clientId, secret } = config.xiaomifeng;
+    if (platform === 'netease-bee') {
+      const nbConfig = config['netease-bee'];
+      const clientId = nbConfig?.clientId;
+      const secret = nbConfig?.secret;
       if (!clientId || !secret) {
-        throw new Error('配置不完整');
+        throw new Error(t('imConfigIncomplete'));
       }
-      return `小蜜蜂配置已就绪（Client ID: ${clientId}）。`;
+      return t('imNeteaseBeeConfigReady', { clientId });
     }
 
     if (platform === 'wecom') {
       const { botId, secret } = config.wecom;
       if (!botId || !secret) {
-        throw new Error('配置不完整');
+        throw new Error(t('imConfigIncomplete'));
       }
-      return `企业微信配置已就绪（Bot ID: ${botId}），通过 OpenClaw 运行。`;
+      return t('imWecomConfigReadyOpenClaw', { botId });
 
     }
 
+    if (platform === 'weixin') {
+      // Weixin has no credentials to probe; just confirm enabled
+      return t('imWeixinConfigReadyOpenClaw');
+    }
+
     if (platform === 'popo') {
-      const { appKey, appSecret, token, aesKey } = config.popo;
-      if (!appKey || !appSecret || !token || !aesKey) {
-        throw new Error('配置不完整');
+      const { appKey, appSecret, token, aesKey, connectionMode } = config.popo;
+      const isWebhook = (connectionMode ?? 'websocket') === 'webhook';
+      if (!appKey || !appSecret || !aesKey || (isWebhook && !token)) {
+        throw new Error(t('imConfigIncomplete'));
       }
-      return 'POPO 配置已就绪，通过 OpenClaw 运行。';
+      return t('imPopoConfigReadyOpenClaw');
     }
 
     if (platform === 'qq') {
       const { appId, appSecret } = config.qq;
       if (!appId || !appSecret) {
-        throw new Error('配置不完整');
+        throw new Error(t('imConfigIncomplete'));
       }
       // Verify credentials by requesting an AccessToken directly via HTTP
       // This avoids starting a full WebSocket connection just for auth check
@@ -1596,42 +1737,18 @@ export class IMGatewayManager extends EventEmitter {
         CONNECTIVITY_TIMEOUT_MS
       );
       if (!tokenResponse.access_token) {
-        throw new Error(tokenResponse.message || '获取 AccessToken 失败');
+        throw new Error(tokenResponse.message || t('imQqAccessTokenFailed'));
       }
-      return `QQ 鉴权通过（AccessToken 已获取）。`;
+      return t('imQqAuthPassed');
     }
 
-    return '未知平台。';
+    return t('imUnknownPlatform');
   }
 
 
-  async sendConversationReply(platform: IMPlatform, conversationId: string, text: string): Promise<boolean> {
+  async sendConversationReply(platform: Platform, conversationId: string, text: string): Promise<boolean> {
     try {
       switch (platform) {
-        case 'dingtalk': {
-          const target = await this.resolveDingTalkConversationReplyTarget(conversationId)
-            ?? this.parseDingTalkConversationTarget(conversationId);
-          if (!target) {
-            // Fallback: try to extract userId directly from conversationId (raw peerId).
-            const fallbackUserId = conversationId.trim();
-            if (!fallbackUserId) {
-              console.warn(`[IMGatewayManager] Cannot resolve DingTalk target from conversationId: ${conversationId}`);
-              return false;
-            }
-            return this.sendDingTalkDirectHttp(fallbackUserId, text);
-          }
-          // Extract userId from target string like "user:0146552636218419"
-          const userId = target.target.startsWith('user:')
-            ? target.target.slice(5)
-            : target.target;
-          return this.sendDingTalkDirectHttp(userId, text);
-        }
-        case 'nim':
-          console.log('[IMGatewayManager] NIM conversation reply via OpenClaw not yet supported');
-          return false;
-        case 'xiaomifeng':
-          await this.xiaomifengGateway.sendConversationNotification(conversationId, text);
-          return true;
         default:
           return this.sendNotificationWithMedia(platform, text);
       }
@@ -1717,7 +1834,7 @@ export class IMGatewayManager extends EventEmitter {
     return false;
   }
   async primeConversationReplyRoute(
-    platform: IMPlatform,
+    platform: Platform,
     conversationId: string,
     coworkSessionId: string,
   ): Promise<void> {
@@ -1881,14 +1998,14 @@ export class IMGatewayManager extends EventEmitter {
     return {
       coworkSessionId: normalizedCoworkSessionId,
       candidateSessionKeys,
-      dingtalkSessionKeys: this.collectSessionKeysByChannel(sessions, 'dingtalk-connector'),
+      dingtalkSessionKeys: this.collectSessionKeysByChannel(sessions, 'dingtalk'),
       resolved: resolveOpenClawDeliveryRouteForSessionKeys(candidateSessionKeys, sessions)
         ?? resolveManagedSessionDeliveryRoute(normalizedCoworkSessionId, sessions),
     };
   }
 
   private cacheConversationReplyRoute(
-    platform: IMPlatform,
+    platform: Platform,
     conversationId: string,
     route: OpenClawDeliveryRoute,
   ): void {
@@ -2008,7 +2125,7 @@ export class IMGatewayManager extends EventEmitter {
       return {
         sessionKey,
         route: {
-          channel: 'dingtalk-connector',
+          channel: 'dingtalk',
           to,
           ...(accountId ? { accountId } : {}),
         },
@@ -2063,54 +2180,142 @@ export class IMGatewayManager extends EventEmitter {
     });
   }
 
-  private getStartedAtMs(platform: IMPlatform, status: IMGatewayStatus): number | null {
+  private getStartedAtMs(platform: Platform, status: IMGatewayStatus): number | null {
     if (platform === 'feishu') {
       return status.feishu.startedAt ? Date.parse(status.feishu.startedAt) : null;
     }
     if (platform === 'dingtalk') return status.dingtalk.startedAt;
     if (platform === 'telegram') return status.telegram.startedAt;
     if (platform === 'nim') return status.nim.startedAt;
-    if (platform === 'xiaomifeng') return status.xiaomifeng.startedAt;
+    if (platform === 'netease-bee') return status['netease-bee'].startedAt;
     if (platform === 'qq') return status.qq.startedAt;
     if (platform === 'wecom') return status.wecom.startedAt;
+    if (platform === 'weixin') return status.weixin.startedAt;
     if (platform === 'popo') return status.popo.startedAt;
     return status.discord.startedAt;
   }
 
-  private getLastInboundAt(platform: IMPlatform, status: IMGatewayStatus): number | null {
+  private getLastInboundAt(platform: Platform, status: IMGatewayStatus): number | null {
     if (platform === 'dingtalk') return status.dingtalk.lastInboundAt;
     if (platform === 'feishu') return status.feishu.lastInboundAt;
     if (platform === 'telegram') return status.telegram.lastInboundAt;
     if (platform === 'nim') return status.nim.lastInboundAt;
-    if (platform === 'xiaomifeng') return status.xiaomifeng.lastInboundAt;
+    if (platform === 'netease-bee') return status['netease-bee'].lastInboundAt;
     if (platform === 'qq') return status.qq.lastInboundAt;
     if (platform === 'wecom') return status.wecom.lastInboundAt;
+    if (platform === 'weixin') return status.weixin.lastInboundAt;
     if (platform === 'popo') return status.popo.lastInboundAt;
     return status.discord.lastInboundAt;
   }
 
-  private getLastOutboundAt(platform: IMPlatform, status: IMGatewayStatus): number | null {
+  private getLastOutboundAt(platform: Platform, status: IMGatewayStatus): number | null {
     if (platform === 'dingtalk') return status.dingtalk.lastOutboundAt;
     if (platform === 'feishu') return status.feishu.lastOutboundAt;
     if (platform === 'telegram') return status.telegram.lastOutboundAt;
     if (platform === 'nim') return status.nim.lastOutboundAt;
-    if (platform === 'xiaomifeng') return status.xiaomifeng.lastOutboundAt;
+    if (platform === 'netease-bee') return status['netease-bee'].lastOutboundAt;
     if (platform === 'qq') return status.qq.lastOutboundAt;
     if (platform === 'wecom') return status.wecom.lastOutboundAt;
+    if (platform === 'weixin') return status.weixin.lastOutboundAt;
     if (platform === 'popo') return status.popo.lastOutboundAt;
     return status.discord.lastOutboundAt;
   }
 
-  private getLastError(platform: IMPlatform, status: IMGatewayStatus): string | null {
+  private getLastError(platform: Platform, status: IMGatewayStatus): string | null {
     if (platform === 'dingtalk') return status.dingtalk.lastError;
     if (platform === 'feishu') return status.feishu.error;
     if (platform === 'telegram') return status.telegram.lastError;
     if (platform === 'nim') return status.nim.lastError;
-    if (platform === 'xiaomifeng') return status.xiaomifeng.lastError;
+    if (platform === 'netease-bee') return status['netease-bee'].lastError;
     if (platform === 'qq') return status.qq.lastError;
     if (platform === 'wecom') return status.wecom.lastError;
+    if (platform === 'weixin') return status.weixin.lastError;
     if (platform === 'popo') return status.popo.lastError;
     return status.discord.lastError;
+  }
+
+  // ==================== Feishu Bot Install Helpers ====================
+
+  /** Lazy-load and cache the feishu-auth module (avoid repeated dynamic import overhead). */
+  private _feishuAuthModule: any = null;
+  private async getFeishuAuthModule() {
+    if (!this._feishuAuthModule) {
+      this._feishuAuthModule = await import('@larksuite/openclaw-lark-tools/dist/utils/feishu-auth.js');
+    }
+    return this._feishuAuthModule;
+  }
+
+  /**
+   * Start the Feishu Device Flow onboarding: init + begin.
+   * Returns data needed to render a QR code in the UI.
+   * Also caches isLark so that pollFeishuInstall uses the correct domain.
+   */
+  private _feishuInstallIsLark = false;
+  async startFeishuInstallQrcode(isLark: boolean): Promise<{
+    url: string;
+    deviceCode: string;
+    interval: number;
+    expireIn: number;
+  }> {
+    const { FeishuAuth } = await this.getFeishuAuthModule();
+    this._feishuInstallIsLark = isLark;
+    const auth = new FeishuAuth();
+    auth.setDomain(isLark);
+    await auth.init();
+    const resp = await auth.begin();
+    return {
+      url: resp.verification_uri_complete,
+      deviceCode: resp.device_code,
+      interval: resp.interval ?? 5,
+      expireIn: resp.expire_in ?? 300,
+    };
+  }
+
+  /**
+   * Poll Feishu Device Flow for the result of a QR code scan.
+   * Uses the domain set during startFeishuInstallQrcode to ensure consistency.
+   */
+  async pollFeishuInstall(deviceCode: string): Promise<{
+    done: boolean;
+    appId?: string;
+    appSecret?: string;
+    domain?: string;
+    error?: string;
+  }> {
+    const { FeishuAuth } = await this.getFeishuAuthModule();
+    const auth = new FeishuAuth();
+    auth.setDomain(this._feishuInstallIsLark);
+    const resp = await auth.poll(deviceCode);
+    if (resp.error) {
+      if (resp.error === 'authorization_pending' || resp.error === 'slow_down') {
+        return { done: false };
+      }
+      return { done: false, error: resp.error_description || resp.error };
+    }
+    if (resp.client_id && resp.client_secret) {
+      const domain = resp.user_info?.tenant_brand === 'lark' ? 'lark' : 'feishu';
+      return { done: true, appId: resp.client_id, appSecret: resp.client_secret, domain };
+    }
+    return { done: false };
+  }
+
+  /**
+   * Validate existing Feishu app credentials (App ID + App Secret).
+   */
+  async verifyFeishuCredentials(appId: string, appSecret: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    const { validateAppCredentials } = await this.getFeishuAuthModule();
+    try {
+      const valid = await validateAppCredentials(appId, appSecret);
+      if (valid) {
+        return { success: true };
+      }
+      return { success: false, error: t('feishuVerifyCredentialsFailed') };
+    } catch (err: any) {
+      return { success: false, error: err?.message || t('feishuVerifyFailed') };
+    }
   }
 
   private calculateVerdict(checks: IMConnectivityCheck[]): IMConnectivityVerdict {

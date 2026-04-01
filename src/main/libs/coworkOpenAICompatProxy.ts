@@ -71,12 +71,109 @@ const LOCAL_HOST = '127.0.0.1';
 const SANDBOX_HOST = '10.0.2.2';
 const GEMINI_FALLBACK_THOUGHT_SIGNATURE = 'skip_thought_signature_validator';
 
+function isGeminiProvider(provider?: string, baseURL?: string): boolean {
+  return provider === 'gemini'
+    || Boolean(baseURL?.includes('generativelanguage.googleapis.com'));
+}
+
+const GEMINI_UNSUPPORTED_SCHEMA_KEYS = new Set([
+  'patternProperties', 'additionalProperties', '$schema', '$id', '$ref', '$defs',
+  'definitions', 'examples', 'minLength', 'maxLength', 'minimum', 'maximum',
+  'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'pattern', 'format',
+  'default', 'minItems', 'maxItems', 'uniqueItems', 'minProperties', 'maxProperties',
+]);
+
+function sanitizeSchemaForGemini(schema: unknown): unknown {
+  if (schema === null || schema === undefined || typeof schema !== 'object') {
+    return schema;
+  }
+  if (Array.isArray(schema)) {
+    return schema.map(sanitizeSchemaForGemini);
+  }
+  const obj = schema as Record<string, unknown>;
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (GEMINI_UNSUPPORTED_SCHEMA_KEYS.has(key)) {
+      continue;
+    }
+    cleaned[key] = sanitizeSchemaForGemini(value);
+  }
+  return cleaned;
+}
+
+function sanitizeToolsForGemini(
+  openAIRequest: Record<string, unknown>,
+  provider?: string,
+  baseURL?: string,
+): void {
+  if (!isGeminiProvider(provider, baseURL)) {
+    return;
+  }
+  const tools = toArray(openAIRequest.tools);
+  if (tools.length === 0) {
+    return;
+  }
+  for (const tool of tools) {
+    const toolObj = toOptionalObject(tool);
+    if (!toolObj) continue;
+    const functionObj = toOptionalObject(toolObj.function);
+    if (functionObj?.parameters !== undefined) {
+      functionObj.parameters = sanitizeSchemaForGemini(functionObj.parameters);
+    }
+    if (toolObj.parameters !== undefined) {
+      toolObj.parameters = sanitizeSchemaForGemini(toolObj.parameters);
+    }
+  }
+}
+
 let proxyServer: http.Server | null = null;
 let proxyPort: number | null = null;
 let upstreamConfig: OpenAICompatUpstreamConfig | null = null;
 let lastProxyError: string | null = null;
+let tokenRefresher: (() => Promise<string | null>) | null = null;
+let currentCoworkSessionId: string | null = null;
 const toolCallExtraContentById = new Map<string, unknown>();
+
+export function setCoworkProxySessionId(sessionId: string | null): void {
+  currentCoworkSessionId = sessionId;
+}
 const MAX_TOOL_CALL_EXTRA_CONTENT_CACHE = 1024;
+
+// Regex to strip Claude SDK-injected time context prefix from user messages
+const TIME_CONTEXT_PREFIX_RE = /^\[.*?\]\s*##\s*Local Time Context[\s\S]*?(?=\n\S|$)/;
+// Regex to strip "Sender (untrusted metadata):" JSON block prefix
+const METADATA_PREFIX_RE = /^Sender \(untrusted metadata\):\s*```json\s*\{[^}]*}\s*```\s*/s;
+
+function extractLastUserMessageText(body: unknown): string | null {
+  const obj = toOptionalObject(body);
+  if (!obj) return null;
+  const messages = obj.messages;
+  if (!Array.isArray(messages)) return null;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = toOptionalObject(messages[i]);
+    if (!msg || msg.role !== 'user') continue;
+
+    let text: string | null = null;
+    if (typeof msg.content === 'string') {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        const b = toOptionalObject(block);
+        if (b && b.type === 'text' && typeof b.text === 'string') {
+          text = b.text;
+          break;
+        }
+      }
+    }
+    if (text) {
+      text = text.replace(METADATA_PREFIX_RE, '').replace(TIME_CONTEXT_PREFIX_RE, '').trim();
+      if (text.length > 100) text = text.substring(0, 100);
+      return text || null;
+    }
+  }
+  return null;
+}
 
 function toOptionalObject(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -2196,6 +2293,19 @@ async function handleRequest(
 
   const upstreamAPIType = resolveUpstreamAPIType(upstreamConfig.provider);
   const openAIRequest = anthropicToOpenAI(parsedRequestBody);
+
+  // Inject session_id and user_message for lobsterai-server logging only.
+  // Strict providers (e.g. Gemini) reject unknown payload fields.
+  if (upstreamConfig.provider === 'lobsterai-server') {
+    if (currentCoworkSessionId) {
+      openAIRequest.session_id = currentCoworkSessionId;
+    }
+    const extractedUserMessage = extractLastUserMessageText(parsedRequestBody);
+    if (extractedUserMessage) {
+      openAIRequest.user_message = extractedUserMessage;
+    }
+  }
+
   if (!openAIRequest.model) {
     openAIRequest.model = upstreamConfig.model;
   }
@@ -2215,6 +2325,7 @@ async function handleRequest(
   filterOpenAIToolsForProvider(openAIRequest, upstreamConfig.provider);
   remapMessageRolesForMiniMax(openAIRequest, upstreamConfig.provider);
   hydrateOpenAIRequestToolCalls(openAIRequest, upstreamConfig.provider, upstreamConfig.baseURL);
+  sanitizeToolsForGemini(openAIRequest, upstreamConfig.provider, upstreamConfig.baseURL);
 
   if (upstreamAPIType === 'chat_completions') {
     normalizeMaxTokensFieldForOpenAIProvider(openAIRequest, upstreamConfig.provider);
@@ -2236,7 +2347,11 @@ async function handleRequest(
     'Content-Type': 'application/json',
   };
   if (upstreamConfig.apiKey) {
-    headers.Authorization = `Bearer ${upstreamConfig.apiKey}`;
+    if (isGeminiProvider(upstreamConfig.provider, upstreamConfig.baseURL)) {
+      headers['x-goog-api-key'] = upstreamConfig.apiKey;
+    } else {
+      headers.Authorization = `Bearer ${upstreamConfig.apiKey}`;
+    }
   }
 
   const targetURLs = buildUpstreamTargetUrls(upstreamConfig.baseURL, upstreamAPIType);
@@ -2272,6 +2387,30 @@ async function handleRequest(
   }
 
   if (!upstreamResponse.ok) {
+    // 401/403 from lobsterai-server likely means the JWT accessToken expired.
+    // Refresh the token and retry once before falling through to other error handling.
+    if ((upstreamResponse.status === 401 || upstreamResponse.status === 403) && tokenRefresher) {
+      console.log(`[CoworkProxy] Got ${upstreamResponse.status}, attempting token refresh and retry...`);
+      try {
+        const newToken = await tokenRefresher();
+        if (newToken) {
+          if (isGeminiProvider(upstreamConfig?.provider, upstreamConfig?.baseURL)) {
+            headers['x-goog-api-key'] = newToken;
+          } else {
+            headers.Authorization = `Bearer ${newToken}`;
+          }
+          if (upstreamConfig) {
+            upstreamConfig.apiKey = newToken;
+          }
+          upstreamResponse = await sendUpstreamRequest(upstreamRequest, currentTargetURL);
+          const retryDuration = Date.now() - fetchStartTime;
+          console.log(`[CoworkProxy] Token refresh retry: status=${upstreamResponse.status}, ok=${upstreamResponse.ok}, fetchTime=${retryDuration}ms`);
+        }
+      } catch (refreshError) {
+        console.warn('[CoworkProxy] Token refresh retry failed:', refreshError);
+      }
+    }
+
     if (upstreamResponse.status === 404 && targetURLs.length > 1) {
       for (let i = 1; i < targetURLs.length; i += 1) {
         const retryURL = targetURLs[i];
@@ -2423,6 +2562,7 @@ export const __openAICompatProxyTestUtils = {
   processResponsesStreamEvent,
   convertChatCompletionsRequestToResponsesRequest,
   filterOpenAIToolsForProvider,
+  isGeminiProvider,
 };
 
 export async function startCoworkOpenAICompatProxy(): Promise<void> {
@@ -2490,6 +2630,14 @@ export function configureCoworkOpenAICompatProxy(config: OpenAICompatUpstreamCon
     apiKey: config.apiKey?.trim(),
   };
   lastProxyError = null;
+}
+
+/**
+ * Set a callback that refreshes the auth token and returns the new accessToken.
+ * Called by the proxy on 401/403 to retry with a fresh token.
+ */
+export function setProxyTokenRefresher(refresher: () => Promise<string | null>): void {
+  tokenRefresher = refresher;
 }
 
 export function getCoworkOpenAICompatProxyBaseURL(target: OpenAICompatProxyTarget = 'local'): string | null {

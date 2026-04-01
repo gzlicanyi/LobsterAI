@@ -3,6 +3,8 @@
  * Mirrors src/main/im/types.ts for use in React components
  */
 
+import type { Platform } from '@shared/platform';
+
 // ==================== DingTalk Types ====================
 
 export interface DingTalkOpenClawConfig {
@@ -178,16 +180,16 @@ export interface NimGatewayStatus {
   lastOutboundAt: number | null;
 }
 
-// ==================== Xiaomifeng Types ====================
+// ==================== NetEase Bee Types ====================
 
-export interface XiaomifengConfig {
+export interface NeteaseBeeChanConfig {
   enabled: boolean;
   clientId: string;    // 小蜜蜂平台的 NIM 账号 ID
   secret: string;      // 用于 token 中继的密钥
   debug?: boolean;
 }
 
-export interface XiaomifengGatewayStatus {
+export interface NeteaseBeeChanGatewayStatus {
   connected: boolean;
   startedAt: number | null;
   lastError: string | null;
@@ -253,6 +255,7 @@ export interface WecomGatewayStatus {
 
 export interface PopoOpenClawConfig {
   enabled: boolean;
+  connectionMode: 'websocket' | 'webhook';
   appKey: string;
   appSecret: string;
   token: string;
@@ -277,9 +280,29 @@ export interface PopoGatewayStatus {
   lastOutboundAt: number | null;
 }
 
+// ==================== Weixin (微信) Types ====================
+
+export interface WeixinOpenClawConfig {
+  enabled: boolean;
+  accountId: string;
+  dmPolicy: 'open' | 'pairing' | 'allowlist' | 'disabled';
+  allowFrom: string[];
+  groupPolicy: 'open' | 'allowlist' | 'disabled';
+  groupAllowFrom: string[];
+  debug: boolean;
+}
+
+export interface WeixinGatewayStatus {
+  connected: boolean;
+  startedAt: number | null;
+  lastError: string | null;
+  lastInboundAt: number | null;
+  lastOutboundAt: number | null;
+}
+
 // ==================== Common IM Types ====================
 
-export type IMPlatform = 'dingtalk' | 'feishu' | 'qq' | 'telegram' | 'discord' | 'nim' | 'xiaomifeng' | 'wecom' | 'popo';
+export type IMPlatform = keyof Omit<IMGatewayConfig, 'settings'> | 'xiaomifeng';
 
 export interface IMGatewayConfig {
   dingtalk: DingTalkOpenClawConfig;
@@ -288,15 +311,18 @@ export interface IMGatewayConfig {
   qq: QQOpenClawConfig;
   discord: DiscordOpenClawConfig;
   nim: NimConfig;
-  xiaomifeng: XiaomifengConfig;
+  'netease-bee': NeteaseBeeChanConfig;
   wecom: WecomOpenClawConfig;
   popo: PopoOpenClawConfig;
+  weixin: WeixinOpenClawConfig;
   settings: IMSettings;
 }
 
 export interface IMSettings {
   systemPrompt?: string;
   skillsEnabled: boolean;
+  /** Per-platform agent binding. Key = platform name, value = agent ID. Absent or 'main' = default. */
+  platformAgentBindings?: Record<string, string>;
 }
 
 export interface IMGatewayStatus {
@@ -306,9 +332,10 @@ export interface IMGatewayStatus {
   telegram: TelegramGatewayStatus;
   discord: DiscordGatewayStatus;
   nim: NimGatewayStatus;
-  xiaomifeng: XiaomifengGatewayStatus;
+  'netease-bee': NeteaseBeeChanGatewayStatus;
   wecom: WecomGatewayStatus;
   popo: PopoGatewayStatus;
+  weixin: WeixinGatewayStatus;
 }
 
 // ==================== Media Attachment Types ====================
@@ -327,7 +354,7 @@ export interface IMMediaAttachment {
 }
 
 export interface IMMessage {
-  platform: IMPlatform;
+  platform: Platform;
   messageId: string;
   conversationId: string;
   senderId: string;
@@ -388,7 +415,7 @@ export interface IMConnectivityCheck {
 }
 
 export interface IMConnectivityTestResult {
-  platform: IMPlatform;
+  platform: Platform;
   testedAt: number;
   verdict: IMConnectivityVerdict;
   checks: IMConnectivityCheck[];
@@ -472,7 +499,7 @@ export const DEFAULT_NIM_CONFIG: NimConfig = {
   token: '',
 };
 
-export const DEFAULT_XIAOMIFENG_CONFIG: XiaomifengConfig = {
+export const DEFAULT_NETEASE_BEE_CONFIG: NeteaseBeeChanConfig = {
   enabled: false,
   clientId: '',
   secret: '',
@@ -526,6 +553,7 @@ export const DEFAULT_WECOM_CONFIG: WecomOpenClawConfig = {
 
 export const DEFAULT_POPO_CONFIG: PopoOpenClawConfig = {
   enabled: false,
+  connectionMode: 'websocket',
   appKey: '',
   appSecret: '',
   token: '',
@@ -542,6 +570,16 @@ export const DEFAULT_POPO_CONFIG: PopoOpenClawConfig = {
   debug: true,
 };
 
+export const DEFAULT_WEIXIN_CONFIG: WeixinOpenClawConfig = {
+  enabled: false,
+  accountId: '',
+  dmPolicy: 'open',
+  allowFrom: [],
+  groupPolicy: 'open',
+  groupAllowFrom: [],
+  debug: true,
+};
+
 export const DEFAULT_IM_SETTINGS: IMSettings = {
   systemPrompt: '',
   skillsEnabled: true,
@@ -554,9 +592,10 @@ export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
   qq: DEFAULT_QQ_CONFIG,
   discord: DEFAULT_DISCORD_OPENCLAW_CONFIG,
   nim: DEFAULT_NIM_CONFIG,
-  xiaomifeng: DEFAULT_XIAOMIFENG_CONFIG,
+  'netease-bee': DEFAULT_NETEASE_BEE_CONFIG,
   wecom: DEFAULT_WECOM_CONFIG,
   popo: DEFAULT_POPO_CONFIG,
+  weixin: DEFAULT_WEIXIN_CONFIG,
   settings: DEFAULT_IM_SETTINGS,
 };
 
@@ -601,7 +640,7 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
     lastInboundAt: null,
     lastOutboundAt: null,
   },
-  xiaomifeng: {
+  'netease-bee': {
     connected: false,
     startedAt: null,
     lastError: null,
@@ -625,6 +664,13 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
     lastOutboundAt: null,
   },
   popo: {
+    connected: false,
+    startedAt: null,
+    lastError: null,
+    lastInboundAt: null,
+    lastOutboundAt: null,
+  },
+  weixin: {
     connected: false,
     startedAt: null,
     lastError: null,

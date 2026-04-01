@@ -44,6 +44,22 @@ LobsterAI is an Electron + React desktop application with two primary modes:
 
 Uses strict process isolation with IPC communication.
 
+### Authentication Flow
+
+1. **登录：** 打开系统浏览器 → Portal 登录页 → URS 登录成功 → deep link `lobsterai://auth/callback?code=<authCode>`
+2. **换取令牌：** `POST /api/auth/exchange` 消费一次性 authCode → 返回 `accessToken`(2h) + `refreshToken`(30d)
+3. **持久化：** SQLite kv store `auth_tokens` 存储双 token，应用重启后自动恢复登录态
+4. **请求认证：** `fetchWithAuth()` 在每个 API 请求附加 `Authorization: Bearer <accessToken>`
+5. **被动刷新：** 收到 HTTP 401 → 使用 refreshToken 调用 `POST /api/auth/refresh` → 获取新 accessToken → 重试原请求
+6. **主动刷新：** 定期检查 accessToken 距 exp < 5 分钟 → 后台静默刷新，避免请求失败
+7. **滚动续期：** 每次 refresh 签发新 refreshToken（新 30 天有效期），连续使用不掉线
+8. **退出条件：** 连续 30 天不使用（refreshToken 过期）→ 清除本地 token → 用户需重新登录
+
+**关键文件：**
+- Token 存储与请求：`src/renderer/services/api.ts`（`fetchWithAuth()`、token 管理）
+- 登录流程：`src/main/main.ts`（deep link 处理 `lobsterai://` 协议）
+- 持久化：`src/main/sqliteStore.ts`（kv 表存储 `auth_tokens`）
+
 ### Process Model
 
 **Main Process** (`src/main/main.ts`):
@@ -212,11 +228,96 @@ The Artifacts feature provides rich preview of code outputs similar to Claude's 
 - Naming: `PascalCase` for components (e.g., `Chat.tsx`), `camelCase` for functions/vars, and `*Slice.ts` for Redux slices.
 - Tailwind CSS is the primary styling approach; prefer utility classes over bespoke CSS.
 
+## String Literal Constants
+
+**Never use bare string literals** for values that act as discriminants, status codes, IPC channel names, mode selectors, or any string compared/switched against in multiple places. Instead, define a centralized `as const` object and derive the type from it.
+
+### Pattern
+
+```typescript
+// In constants.ts (one per module, e.g. src/scheduledTask/constants.ts)
+export const SessionTarget = {
+  Main: 'main',
+  Isolated: 'isolated',
+} as const;
+export type SessionTarget = typeof SessionTarget[keyof typeof SessionTarget];
+```
+
+### Rules
+
+1. **One source of truth per module.** Each module that owns a set of string constants must have a `constants.ts` file. Consumer modules import both the value object and the type.
+2. **Value construction and comparison must use constants.** Write `SessionTarget.Main`, not `'main'`. This applies to source files, test files, and any other TypeScript that references these values.
+3. **Discriminant `kind` fields in interface definitions remain literal.** The `kind: 'at'` in `interface ScheduleAt` defines the discriminated union shape and must stay as a literal. The constant should match this value; consumers use the constant object for comparisons and construction.
+4. **IPC channel names must be constants.** All `ipcMain.handle()` registrations and `ipcRenderer.invoke()` calls must reference an `IpcChannel` constant, never a bare string.
+5. **Tests use constants too.** Test files must import and use the same constants — this is the primary defense against "modified the constant but forgot to update the test" drift.
+
+### What NOT to constantize
+
+- Platform-specific identifiers passed through from external sources (e.g., `'telegram'`, `'feishu'` as IM platform names from user config).
+- One-off strings used in a single location with no comparison logic (e.g., error messages, log tags).
+- CSS class names, HTML attributes, and other UI-layer strings managed by Tailwind/React.
+
+### Existing reference
+
+`src/scheduledTask/constants.ts` is the canonical example of this pattern, covering schedule kinds, payload kinds, delivery modes, session targets, wake modes, origin kinds, binding kinds, task status, IPC channels, and migration keys.
+
+## Logging Guidelines
+
+The main process uses `electron-log` via `src/main/logger.ts`, which intercepts all `console.*` calls and writes them to daily-rotated log files. **No additional logging library is needed** — use the standard `console` API everywhere in `src/main/`.
+
+### Log Levels
+
+Choose the level that matches the **significance** of the event:
+
+| Level | API | When to use |
+|-------|-----|-------------|
+| Error | `console.error` | Unrecoverable failures that need investigation — caught exceptions, broken invariants, data corruption |
+| Warn | `console.warn` | Unexpected but recoverable situations — missing optional config, fallback behavior, degraded service |
+| Info | `console.log` | Key lifecycle events worth keeping in production logs — service started/stopped, connection established/lost, session created/destroyed, configuration changed |
+| Debug | `console.debug` | Development-time detail useful only when actively debugging — intermediate state, request/response payloads, loop iterations, sync cursors |
+
+### Message Format
+
+Log messages must read as **plain English sentences**, not as variable dumps.
+
+**Tag**: Every message starts with a bracketed module tag: `[ModuleName]`.
+
+```typescript
+// Good — describes what happened in natural language
+console.log('[ChannelSync] discovered 3 new channel sessions, notified 2 windows');
+console.warn('[ChannelSync] session list returned unexpected type, skipping');
+console.error('[ChannelSync] polling failed:', error);
+
+// Bad — dumps variable names and raw values
+console.log('[ChannelSync] pollChannelSessions: got', sessions.length, 'sessions, keys:', sessions.map(s => s?.key).join(', '));
+console.log('[Debug:syncChannelUserMessages] cursor:', cursor, 'history entries:', historyEntries.length);
+```
+
+### Rules
+
+- **No per-tick logging at info level.** Polling loops, sync cycles, and heartbeats that fire every few seconds must use `console.debug` or be removed entirely. A single summary line at info level is acceptable only when something meaningful changed (e.g. new session discovered, messages synced).
+- **No function-entry logging.** Do not log "function X called with args Y" unless it is a rare or important operation. Routine calls (per-poll, per-message) must not produce info-level output.
+- **No variable-name labels.** Write `received 5 messages` not `historyMessages: 5`. Write `session not found` not `sessionId: null`.
+- **Include context only when useful.** An error log should include the relevant identifier (session ID, channel key) so the issue can be traced. A routine success log should not list every parameter.
+- **Keep messages concise.** One line per event. Do not spread a single log across multiple `console.log` calls.
+- **Errors must include the error object.** Always pass the caught error as the last argument: `console.error('[Module] operation failed:', error)`.
+- **Use English for all log messages.** No Chinese or other non-ASCII text in logs.
+
+### Before Submitting
+
+When adding or modifying log statements, verify:
+1. No new `console.log` calls inside hot loops or polling callbacks — use `console.debug` instead.
+2. Messages read as natural English, not as stringified code.
+3. Error/warn logs include enough context to diagnose without a debugger.
+
 ## Testing Guidelines
 
-- Tests use Node.js built-in `node:test` module (no Jest/Mocha/Vitest).
-- Run tests: `npm run test:memory` (compiles Electron main process first, then runs `tests/coworkMemoryExtractor.test.mjs`).
-- Test files live in `tests/` directory and import compiled output from `dist-electron/`.
+- Unit tests use [Vitest](https://vitest.dev/) and are **co-located** with the source files they cover.
+- Test files must use the `.test.ts` extension and be placed next to the source file (e.g. `src/main/foo.ts` → `src/main/foo.test.ts`).
+- Import test utilities from `vitest`: `import { test, expect } from 'vitest';`
+- **Never** use `.test.mjs` or any other extension — `.test.ts` is the only accepted format.
+- Run all tests: `npm test`. Filter by module: `npm test -- <name>` (e.g. `npm test -- logger`).
+- Avoid importing Electron-only APIs (e.g. `electron-log`) in tests — inline any logic that depends on them.
 - Validate UI changes manually by running `npm run electron:dev` and exercising key flows:
   - Cowork: start session, send prompts, approve/deny tool permissions, stop session
   - Artifacts: preview HTML, SVG, Mermaid diagrams, React components
