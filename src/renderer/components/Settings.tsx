@@ -416,6 +416,15 @@ const formatShortcutFromEvent = (e: React.KeyboardEvent): string | null => {
   return parts.join('+');
 };
 
+const SEND_SHORTCUT_OPTIONS = [
+  { value: 'Enter', label: 'Enter', labelMac: 'Enter' },
+  { value: 'Shift+Enter', label: 'Shift+Enter', labelMac: 'Shift+Enter' },
+  { value: 'Ctrl+Enter', label: 'Ctrl+Enter', labelMac: 'Cmd+Enter' },
+  { value: 'Alt+Enter', label: 'Alt+Enter', labelMac: 'Option+Enter' },
+] as const;
+
+const isMacPlatform = navigator.platform.includes('Mac');
+
 const ShortcutRecorder: React.FC<{ value: string; onChange: (v: string) => void }> = ({ value, onChange }) => {
   const [recording, setRecording] = useState(false);
   const divRef = useRef<HTMLDivElement>(null);
@@ -510,6 +519,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     newChat: 'Ctrl+N',
     search: 'Ctrl+F',
     settings: 'Ctrl+,',
+    sendMessage: 'Enter',
   });
 
   // State for model editing
@@ -3444,6 +3454,23 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-foreground">{i18nService.t('openSettings')}</span>
                   <ShortcutRecorder value={shortcuts.settings} onChange={(v) => handleShortcutChange('settings', v)} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-foreground">{i18nService.t('sendMessageShortcut')}</span>
+                  <select
+                    value={shortcuts.sendMessage}
+                    onChange={(e) => handleShortcutChange('sendMessage', e.target.value)}
+                    className="w-36 rounded-xl border px-3 py-1.5 text-sm cursor-pointer select-none text-center outline-none transition-colors
+                      dark:bg-claude-darkSurfaceInset bg-claude-surfaceInset dark:text-claude-darkText text-claude-text
+                      dark:border-claude-darkBorder border-claude-border hover:border-claude-accent/50
+                      focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30"
+                  >
+                    {SEND_SHORTCUT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {isMacPlatform ? option.labelMac : option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
