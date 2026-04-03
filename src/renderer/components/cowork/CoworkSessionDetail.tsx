@@ -2609,7 +2609,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             sessionId={currentSession?.id}
           />
         </div>
-        <p className="text-center text-[10px] text-muted opacity-50 mt-2 mb-[-8px] select-none">
+        <p className="text-center text-[11px] text-muted opacity-85 mt-2 mb-[-8px] select-none">
           {i18nService.t('aiGeneratedDisclaimer')}
         </p>
       </div>
