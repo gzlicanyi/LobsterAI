@@ -1,17 +1,18 @@
-import { app, BrowserWindow, session } from 'electron';
 import { execSync, spawn, spawnSync } from 'child_process';
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import yaml from 'js-yaml';
+import { app, BrowserWindow, session } from 'electron';
 import extractZip from 'extract-zip';
-import { SqliteStore } from './sqliteStore';
+import fs from 'fs';
+import yaml from 'js-yaml';
+import path from 'path';
+
 import { cpRecursiveSync } from './fsCompat';
+import { t } from './i18n';
 import { getElectronNodeRuntimePath } from './libs/coworkUtil';
 import { appendPythonRuntimeToEnv } from './libs/pythonRuntime';
-import { scanSkillSecurity, scanMultipleSkillDirs, mergeReports } from './libs/skillSecurity/skillSecurityScanner';
-import type { SkillSecurityReport, SecurityReportAction } from './libs/skillSecurity/skillSecurityTypes';
-import { t } from './i18n';
+import { mergeReports,scanMultipleSkillDirs, scanSkillSecurity } from './libs/skillSecurity/skillSecurityScanner';
+import type { SecurityReportAction,SkillSecurityReport } from './libs/skillSecurity/skillSecurityTypes';
+import { SqliteStore } from './sqliteStore';
 
 /**
  * Resolve the user's login shell PATH on macOS/Linux.
@@ -950,7 +951,7 @@ const downloadClawhubSkill = async (
     const raw = error instanceof Error ? error.message : String(error);
     // Strip ANSI escape codes and decode URL-encoded characters
     const cleaned = raw
-      // eslint-disable-next-line no-control-regex
+       
       .replace(/\x1b\[[0-9;]*m/g, '')
       .replace(/%[0-9A-Fa-f]{2}/g, (match) => {
         try { return decodeURIComponent(match); } catch { return match; }
