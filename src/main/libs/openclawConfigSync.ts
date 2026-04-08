@@ -936,7 +936,7 @@ export class OpenClawConfigSync {
               // disabled so OpenClaw doesn't load it at all.
               const pluginEnabled = (() => {
                 if (id === 'dingtalk') return dingTalkInstances.some(i => i.enabled && i.clientId);
-                if (id === 'feishu-openclaw-plugin') return feishuInstances.some(i => i.enabled && i.appId);
+                if (id === 'openclaw-lark') return feishuInstances.some(i => i.enabled && i.appId);
                 if (id === 'openclaw-qqbot') return qqInstances.some(i => i.enabled && i.appId);
                 if (id === 'wecom-openclaw-plugin') return !!(wecomConfig?.enabled && wecomConfig.botId);
                 if (id === 'moltbot-popo') return !!(popoConfig?.enabled && popoConfig.appKey);
@@ -948,7 +948,7 @@ export class OpenClawConfigSync {
               return [id, { enabled: pluginEnabled }];
             }),
           ),
-          ...(preinstalledPluginIds.includes('feishu-openclaw-plugin')
+          ...(preinstalledPluginIds.includes('openclaw-lark')
             ? { feishu: { enabled: false } }
             : {}),
           ...(preinstalledPluginIds.includes('openclaw-qqbot')
@@ -1101,7 +1101,7 @@ export class OpenClawConfigSync {
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), discord: discordChannel };
     }
 
-    // Sync Feishu OpenClaw channel config (via feishu-openclaw-plugin) — multi-instance via accounts
+    // Sync Feishu OpenClaw channel config (via @larksuite/openclaw-lark) — multi-instance via accounts
     const enabledFeishuInstances = feishuInstances.filter(i => i.enabled && i.appId);
     if (enabledFeishuInstances.length > 0) {
       const buildFeishuAccountConfig = (inst: (typeof enabledFeishuInstances)[0], secretEnvVar: string): Record<string, unknown> => ({
@@ -1144,12 +1144,14 @@ export class OpenClawConfigSync {
     // Sync DingTalk OpenClaw channel config (via dingtalk-connector plugin) — multi-instance via accounts
     const enabledDingTalkInstances = dingTalkInstances.filter(i => i.enabled && i.clientId);
     if (enabledDingTalkInstances.length > 0) {
-      const gatewayToken = this.engineManager.getGatewayToken();
       const buildDingTalkAccountConfig = (inst: (typeof enabledDingTalkInstances)[0], secretEnvVar: string): Record<string, unknown> => ({
         enabled: true,
         name: inst.instanceName,
         clientId: inst.clientId,
         clientSecret: `\${${secretEnvVar}}`,
+        // v3.5.x schema: dmPolicy/groupPolicy/allowFrom are valid; sessionTimeout/
+        // separateSessionByConversation/groupSessionScope/sharedMemoryAcrossConversations/
+        // gatewayBaseUrl were LobsterAI-specific and are not in the plugin schema.
         dmPolicy: inst.dmPolicy || 'open',
         allowFrom: (() => {
           const ids = inst.allowFrom?.length ? [...inst.allowFrom] : [];
@@ -1157,11 +1159,6 @@ export class OpenClawConfigSync {
           return ids;
         })(),
         groupPolicy: inst.groupPolicy || 'open',
-        sessionTimeout: inst.sessionTimeout ?? 1800000,
-        separateSessionByConversation: inst.separateSessionByConversation ?? true,
-        groupSessionScope: inst.groupSessionScope || 'group',
-        sharedMemoryAcrossConversations: inst.sharedMemoryAcrossConversations ?? false,
-        ...(inst.gatewayBaseUrl ? { gatewayBaseUrl: inst.gatewayBaseUrl } : {}),
       });
 
       // All instances go into `accounts` dict
@@ -1173,10 +1170,6 @@ export class OpenClawConfigSync {
       }
 
       const dingtalkChannel: Record<string, unknown> = { accounts };
-      // gatewayToken is shared (not per-instance)
-      if (gatewayToken) {
-        dingtalkChannel.gatewayToken = '${LOBSTER_DINGTALK_GW_TOKEN}';
-      }
 
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'dingtalk': dingtalkChannel };
     }

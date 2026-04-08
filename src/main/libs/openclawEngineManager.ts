@@ -296,7 +296,9 @@ export class OpenClawEngineManager extends EventEmitter {
         .map((p: { id?: string }) => p.id)
         .filter((id: unknown): id is string => typeof id === 'string');
       const localIds = listLocalOpenClawExtensionIds();
-      const allNonBundledIds = [...new Set([...thirdPartyIds, ...localIds])];
+      // Include renamed plugin ids so their old dirs get cleaned up
+      const renamedIds = ['feishu-openclaw-plugin'];
+      const allNonBundledIds = [...new Set([...thirdPartyIds, ...localIds, ...renamedIds])];
       const cleaned = cleanupStaleThirdPartyPluginsFromBundledDir(runtime.root, allNonBundledIds);
       if (cleaned.length > 0) {
         console.log(`[OpenClaw] cleaned stale plugins from bundled scan dirs: ${cleaned.join(', ')}`);

@@ -322,11 +322,24 @@ log(`All ${plugins.length} plugin(s) installed successfully.`);
 // live in `third-party-extensions/`, clean up the old location.
 {
   const oldExtensionsDir = path.join(runtimeCurrentDir, 'extensions');
+  // Clean current plugin ids from old extensions/ directory
   for (const plugin of plugins) {
     const staleDir = path.join(oldExtensionsDir, plugin.id);
     if (fs.existsSync(staleDir)) {
       fs.rmSync(staleDir, { recursive: true, force: true });
       log(`Removed stale plugin from old location: extensions/${plugin.id}`);
+    }
+  }
+  // Clean renamed plugin dirs from both locations
+  // (e.g. feishu-openclaw-plugin was renamed to openclaw-lark)
+  const renamedPluginIds = ['feishu-openclaw-plugin'];
+  for (const id of renamedPluginIds) {
+    for (const baseDir of [oldExtensionsDir, runtimeExtensionsDir]) {
+      const staleDir = path.join(baseDir, id);
+      if (fs.existsSync(staleDir)) {
+        fs.rmSync(staleDir, { recursive: true, force: true });
+        log(`Removed renamed plugin: ${path.relative(runtimeCurrentDir, staleDir)}`);
+      }
     }
   }
 }

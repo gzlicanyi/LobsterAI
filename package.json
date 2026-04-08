@@ -14,13 +14,12 @@
       {
         "id": "dingtalk",
         "npm": "@soimy/dingtalk",
-        "version": "3.5.2",
-        "optional": true
+        "version": "3.5.3"
       },
       {
-        "id": "feishu-openclaw-plugin",
-        "npm": "@larksuiteoapi/feishu-openclaw-plugin",
-        "version": "2026.3.8"
+        "id": "openclaw-lark",
+        "npm": "@larksuite/openclaw-lark",
+        "version": "2026.4.7"
       },
       {
         "id": "openclaw-qqbot",
@@ -40,7 +39,7 @@
       {
         "id": "moltbot-popo",
         "npm": "moltbot-popo",
-        "version": "2.0.3",
+        "version": "2.0.7",
         "registry": "https://npm.nie.netease.com",
         "optional": true
       },
