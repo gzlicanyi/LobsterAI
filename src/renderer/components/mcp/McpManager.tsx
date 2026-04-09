@@ -474,7 +474,7 @@ const McpManager: React.FC = () => {
                       </button>
                       <div
                         className={`w-9 h-5 rounded-full flex items-center transition-colors cursor-pointer flex-shrink-0 ${
-                          server.enabled ? 'bg-primary' : 'bg-border'
+                          server.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                         }`}
                         onClick={() => handleToggleEnabled(server.id)}
                       >
@@ -642,7 +642,7 @@ const McpManager: React.FC = () => {
                       </button>
                       <div
                         className={`w-9 h-5 rounded-full flex items-center transition-colors cursor-pointer flex-shrink-0 ${
-                          server.enabled ? 'bg-primary' : 'bg-border'
+                          server.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                         }`}
                         onClick={() => handleToggleEnabled(server.id)}
                       >

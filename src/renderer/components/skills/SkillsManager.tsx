@@ -733,7 +733,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                     className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
                       readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
                     } ${
-                      skill.enabled ? 'bg-primary' : 'bg-border'
+                      skill.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                     }`}
                     onClick={(e) => { e.stopPropagation(); if (!readOnly) handleToggleSkill(skill.id); }}
                   >
@@ -1110,7 +1110,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
                   readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
                 } ${
-                  selectedSkill.enabled ? 'bg-primary' : 'bg-border'
+                  selectedSkill.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
                 }`}
                 onClick={() => {
                   if (readOnly) return;

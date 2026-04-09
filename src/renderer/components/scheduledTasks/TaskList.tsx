@@ -62,7 +62,7 @@ const TaskListItem: React.FC<TaskListItemProps> = ({ task, onRequestDelete }) =>
             void scheduledTaskService.toggleTask(task.id, !task.enabled);
           }}
           className={`relative shrink-0 w-7 h-4 rounded-full transition-colors ${
-            task.enabled ? 'bg-primary' : 'bg-border'
+            task.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
           }`}
         >
           <span
