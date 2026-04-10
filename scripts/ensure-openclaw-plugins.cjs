@@ -218,7 +218,15 @@ for (const plugin of plugins) {
       runOpenClawCli(
         ['plugins', 'install', installSpec, '--force', '--dangerously-force-unsafe-install'],
         {
-          env: { OPENCLAW_STATE_DIR: stagingDir },
+          env: {
+            OPENCLAW_STATE_DIR: stagingDir,
+            // Prevent npm from auto-installing peerDependencies (npm v7+).
+            // Channel plugins declare openclaw as a peerDep, but the host
+            // gateway already provides the SDK at runtime.  Without this,
+            // npm installs the full openclaw SDK + transitive deps (~738 MB)
+            // into each plugin's node_modules.
+            npm_config_legacy_peer_deps: 'true',
+          },
           stdio: 'inherit',
         }
       );
