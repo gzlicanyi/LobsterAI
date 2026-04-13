@@ -152,7 +152,9 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
   const showConversationSelector = isIMChannel(form.notifyChannel);
 
   useEffect(() => {
-    setForm(createFormState(task));
+    const nextForm = createFormState(task);
+    initialFormRef.current = JSON.stringify(nextForm);
+    setForm(nextForm);
   }, [task]);
 
   useEffect(() => {
@@ -270,6 +272,8 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
       } else if (task) {
         await scheduledTaskService.updateTaskById(task.id, input);
       }
+      initialFormRef.current = JSON.stringify(form);
+      onDirtyChange?.(false);
       onSaved();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
