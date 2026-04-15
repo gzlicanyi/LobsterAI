@@ -172,6 +172,12 @@ const buildAvailableOpenClawProviders = (): Record<string, { models: Array<{ id:
   return providerMap;
 };
 
+// Provider IDs that were renamed in past refactors. Any stored agent model ref
+// using an old ID is rewritten to the current ID on startup.
+const RENAMED_PROVIDER_IDS: Record<string, string> = {
+  'github-copilot': 'lobsterai-copilot',
+};
+
 const migrateAgentModelRefs = (): number => {
   const defaultModelRef = resolveDefaultAgentModelRef();
   if (!defaultModelRef) return 0;
@@ -181,8 +187,20 @@ const migrateAgentModelRefs = (): number => {
   let changed = 0;
 
   for (const agent of agents) {
-    const normalizedModel = agent.model.trim();
+    let normalizedModel = agent.model.trim();
     if (!normalizedModel) continue;
+
+    // Apply explicit provider rename map before qualification so that renamed
+    // provider IDs (e.g. 'github-copilot' → 'lobsterai-copilot') are corrected
+    // even though resolveQualifiedAgentModelRef treats any slash-ref as valid.
+    const slashIdx = normalizedModel.indexOf('/');
+    if (slashIdx > 0) {
+      const storedProviderId = normalizedModel.slice(0, slashIdx);
+      const renamedId = RENAMED_PROVIDER_IDS[storedProviderId];
+      if (renamedId) {
+        normalizedModel = `${renamedId}${normalizedModel.slice(slashIdx)}`;
+      }
+    }
 
     const qualification = resolveQualifiedAgentModelRef({
       agentModel: normalizedModel,
@@ -196,7 +214,7 @@ const migrateAgentModelRefs = (): number => {
       continue;
     }
 
-    if (qualification.status !== 'qualified' || qualification.primaryModel === normalizedModel) {
+    if (qualification.status !== 'qualified' || qualification.primaryModel === agent.model.trim()) {
       continue;
     }
 
