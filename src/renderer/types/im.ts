@@ -434,10 +434,11 @@ export const DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG: EmailMultiInstanceConfig = {
 
 export const DEFAULT_EMAIL_INSTANCE_CONFIG: Partial<EmailInstanceConfig> = {
   enabled: true,
-  transport: 'imap',
+  transport: 'ws',
   agentId: 'main',
   replyMode: 'complete',
   replyTo: 'sender',
+  allowFrom: ['*'],
 };
 
 export const MAX_EMAIL_INSTANCES = 5;
