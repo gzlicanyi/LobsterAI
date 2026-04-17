@@ -6,6 +6,7 @@ import { useDispatch,useSelector } from 'react-redux';
 import { defaultConfig } from '../../config';
 import { agentService } from '../../services/agent';
 import { configService } from '../../services/config';
+import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
@@ -142,6 +143,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const coworkAgentEngine = useSelector((state: RootState) => state.cowork.config.agentEngine);
     const availableModels = useSelector((state: RootState) => state.model.availableModels);
     const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
+    const currentSession = useSelector((state: RootState) => state.cowork.currentSession);
     const [value, setValue] = useState(draftPrompt);
     const [showFolderMenu, setShowFolderMenu] = useState(false);
     const [showFolderRequiredWarning, setShowFolderRequiredWarning] = useState(false);
@@ -188,6 +190,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     selectedModel: agentSelectedModel,
     hasInvalidExplicitModel: agentModelIsInvalid,
   } = resolveAgentModelSelection({
+    sessionModel: currentSession && currentSession.id === sessionId ? currentSession.modelOverride : '',
     agentModel: currentAgent?.model ?? '',
     availableModels,
     fallbackModel: globalSelectedModel,
@@ -744,7 +747,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   return (
     <div className="relative">
       {attachments.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-2">
+        <div className="mb-2 flex flex-wrap gap-2 max-h-[136px] overflow-y-auto">
           {attachments.map((attachment) => (
             <AttachmentCard
               key={attachment.path}
@@ -842,13 +845,18 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                     )}
                   </>
                 )}
-                {showModelSelector && !remoteManaged && (
+                {showModelSelector && (
                   <div className="flex flex-col items-start gap-1">
                     <ModelSelector
                       dropdownDirection="up"
                       value={coworkAgentEngine === 'openclaw' ? agentSelectedModel : null}
                       onChange={coworkAgentEngine === 'openclaw'
                         ? async (nextModel) => {
+                            if (sessionId) {
+                              if (!nextModel) return;
+                              await coworkService.patchSession(sessionId, { model: toOpenClawModelRef(nextModel) });
+                              return;
+                            }
                             if (!currentAgent || !nextModel) return;
                             await agentService.updateAgent(currentAgent.id, { model: toOpenClawModelRef(nextModel) });
                           }

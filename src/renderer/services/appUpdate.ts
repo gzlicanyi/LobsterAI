@@ -1,4 +1,5 @@
-import { getUpdateCheckUrl, getManualUpdateCheckUrl, getFallbackDownloadUrl } from './endpoints';
+import { getFallbackDownloadUrl,getManualUpdateCheckUrl, getUpdateCheckUrl } from './endpoints';
+import { getUpdateQueryString } from './installationId';
 
 export const UPDATE_POLL_INTERVAL_MS = 12 * 60 * 60 * 1000;
 export const UPDATE_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
@@ -91,7 +92,9 @@ const getPlatformDownloadUrl = (value: UpdateValue | undefined): string => {
 };
 
 export const checkForAppUpdate = async (currentVersion: string, manual?: boolean): Promise<AppUpdateInfo | null> => {
-  const url = manual ? getManualUpdateCheckUrl() : getUpdateCheckUrl();
+  const baseUrl = manual ? getManualUpdateCheckUrl() : getUpdateCheckUrl();
+  const qs = await getUpdateQueryString();
+  const url = qs ? `${baseUrl}?${qs}` : baseUrl;
   console.log(`[AppUpdate] checking update, currentVersion=${currentVersion}, url=${url}`);
 
   const response = await window.electron.api.fetch({

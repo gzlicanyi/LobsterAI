@@ -12,6 +12,7 @@ import {
   OllamaIcon,
   OpenAIIcon,
   OpenRouterIcon,
+  QianfanIcon,
   QwenIcon,
   StepfunIcon,
   VolcengineIcon,
@@ -36,6 +37,7 @@ const PROVIDER_ICON_MAP: Record<string, React.ReactNode> = {
   [ProviderName.OpenRouter]:   <OpenRouterIcon />,
   [ProviderName.Copilot]:      <GitHubCopilotIcon />,
   [ProviderName.Ollama]:       <OllamaIcon />,
+  [ProviderName.Qianfan]:      <QianfanIcon />,
 };
 
 export function getProviderIcon(id: string): React.ReactNode {

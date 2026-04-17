@@ -56,6 +56,23 @@ const createStore = (messages) => {
         return created;
       },
       updateSession: () => {},
+      replaceConversationMessages: (sessionId, authoritative) => {
+        assert.equal(sessionId, session.id);
+        // Remove existing user/assistant messages
+        session.messages = session.messages.filter(
+          (m) => m.type !== 'user' && m.type !== 'assistant',
+        );
+        // Re-insert authoritative entries
+        for (const entry of authoritative) {
+          session.messages.push({
+            id: `msg-${nextId++}`,
+            type: entry.role,
+            content: entry.text,
+            timestamp: nextId,
+            metadata: { isStreaming: false, isFinal: true },
+          });
+        }
+      },
     },
   };
 };

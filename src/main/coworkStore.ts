@@ -6,12 +6,6 @@ import os from 'os';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
-import {
-  type CoworkMemoryGuardLevel,
-  extractTurnMemoryChanges,
-  isQuestionLikeMemoryText,
-} from './libs/coworkMemoryExtractor';
-import { judgeMemoryCandidate } from './libs/coworkMemoryJudge';
 
 // Default working directory for new users
 const getDefaultWorkingDirectory = (): string => {
@@ -33,6 +27,7 @@ const normalizeRecentWorkspacePath = (cwd: string): string => {
 const DEFAULT_MEMORY_ENABLED = true;
 const DEFAULT_MEMORY_IMPLICIT_UPDATE_ENABLED = true;
 const DEFAULT_MEMORY_LLM_JUDGE_ENABLED = false;
+export type CoworkMemoryGuardLevel = 'strict' | 'standard' | 'relaxed';
 const DEFAULT_MEMORY_GUARD_LEVEL: CoworkMemoryGuardLevel = 'strict';
 const DEFAULT_MEMORY_USER_MEMORIES_MAX_ITEMS = 12;
 const MIN_MEMORY_USER_MEMORIES_MAX_ITEMS = 1;
@@ -40,6 +35,26 @@ const MAX_MEMORY_USER_MEMORIES_MAX_ITEMS = 60;
 const MEMORY_NEAR_DUPLICATE_MIN_SCORE = 0.82;
 const MEMORY_PROCEDURAL_TEXT_RE = /(执行以下命令|run\s+(?:the\s+)?following\s+command|\b(?:cd|npm|pnpm|yarn|node|python|bash|sh|git|curl|wget)\b|\$[A-Z_][A-Z0-9_]*|&&|--[a-z0-9-]+|\/tmp\/|\.sh\b|\.bat\b|\.ps1\b)/i;
 const MEMORY_ASSISTANT_STYLE_TEXT_RE = /^(?:使用|use)\s+[A-Za-z0-9._-]+\s*(?:技能|skill)/i;
+
+// Regexes and helper inlined from the removed coworkMemoryExtractor module.
+// Used only by shouldAutoDeleteMemoryText() during startup memory cleanup.
+const CHINESE_QUESTION_PREFIX_RE = /^(?:请问|问下|问一下|是否|能否|可否|为什么|为何|怎么|如何|谁|什么|哪(?:里|儿|个)?|几|多少|要不要|会不会|是不是|能不能|可不可以|行不行|对不对|好不好)/u;
+const ENGLISH_QUESTION_PREFIX_RE = /^(?:what|who|why|how|when|where|which|is|are|am|do|does|did|can|could|would|will|should)\b/i;
+const QUESTION_INLINE_RE = /(是不是|能不能|可不可以|要不要|会不会|有没有|对不对|好不好)/i;
+const QUESTION_SUFFIX_RE = /(吗|么|呢|嘛)\s*$/u;
+
+function isQuestionLikeMemoryText(text: string): boolean {
+  // This function has its own normalization (strips trailing punctuation)
+  // that differs from normalizeMemoryText, so it cannot reuse that helper.
+  const normalized = text.replace(/\s+/g, ' ').trim().replace(/[。！!]+$/g, '').trim();
+  if (!normalized) return false;
+  if (/[？?]\s*$/.test(normalized)) return true;
+  if (CHINESE_QUESTION_PREFIX_RE.test(normalized)) return true;
+  if (ENGLISH_QUESTION_PREFIX_RE.test(normalized)) return true;
+  if (QUESTION_INLINE_RE.test(normalized)) return true;
+  if (QUESTION_SUFFIX_RE.test(normalized)) return true;
+  return false;
+}
 
 function normalizeMemoryGuardLevel(value: string | undefined): CoworkMemoryGuardLevel {
   if (value === 'strict' || value === 'standard' || value === 'relaxed') return value;
@@ -297,7 +312,7 @@ function shouldAutoDeleteMemoryText(text: string): boolean {
 export type CoworkSessionStatus = 'idle' | 'running' | 'completed' | 'error';
 export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'system';
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
-export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
+export type CoworkAgentEngine = 'openclaw';
 
 export type AgentSource = 'custom' | 'preset';
 
@@ -344,10 +359,7 @@ export interface UpdateAgentRequest {
 
 const COWORK_AGENT_ENGINE = 'openclaw';
 
-function normalizeCoworkAgentEngineValue(value?: string | null): CoworkAgentEngine {
-  if (value === COWORK_AGENT_ENGINE || value === 'openclaw') {
-    return value;
-  }
+function normalizeCoworkAgentEngineValue(_value?: string | null): CoworkAgentEngine {
   return COWORK_AGENT_ENGINE;
 }
 
@@ -380,6 +392,7 @@ export interface CoworkSession {
   pinned: boolean;
   cwd: string;
   systemPrompt: string;
+  modelOverride: string;
   executionMode: CoworkExecutionMode;
   activeSkillIds: string[];
   agentId: string;
@@ -471,26 +484,6 @@ CoworkConfig,
   | 'skipMissedJobs'
 >>;
 
-export interface ApplyTurnMemoryUpdatesOptions {
-  sessionId: string;
-  userText: string;
-  assistantText: string;
-  implicitEnabled: boolean;
-  memoryLlmJudgeEnabled: boolean;
-  guardLevel: CoworkMemoryGuardLevel;
-  userMessageId?: string;
-  assistantMessageId?: string;
-}
-
-export interface ApplyTurnMemoryUpdatesResult {
-  totalChanges: number;
-  created: number;
-  updated: number;
-  deleted: number;
-  judgeRejected: number;
-  llmReviewed: number;
-  skipped: number;
-}
 
 let cachedDefaultSystemPrompt: string | null = null;
 
@@ -557,8 +550,8 @@ export class CoworkStore {
     this.db
       .prepare(
         `
-      INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
-      VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, 0, ?, ?)
+      INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
+      VALUES (?, ?, NULL, 'idle', ?, ?, '', ?, ?, ?, 0, ?, ?)
     `,
       )
       .run(
@@ -581,6 +574,7 @@ export class CoworkStore {
       pinned: false,
       cwd,
       systemPrompt,
+      modelOverride: '',
       executionMode,
       activeSkillIds,
       agentId,
@@ -599,6 +593,7 @@ export class CoworkStore {
       pinned?: number | null;
       cwd: string;
       system_prompt: string;
+      model_override?: string | null;
       execution_mode?: string | null;
       active_skill_ids?: string | null;
       agent_id?: string | null;
@@ -608,7 +603,7 @@ export class CoworkStore {
 
     const row = this.getOne<SessionRow>(
       `
-      SELECT id, title, claude_session_id, status, pinned, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, created_at, updated_at
+      SELECT id, title, claude_session_id, status, pinned, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, created_at, updated_at
       FROM cowork_sessions
       WHERE id = ?
     `,
@@ -637,6 +632,7 @@ export class CoworkStore {
       pinned: Boolean(row.pinned),
       cwd: row.cwd,
       systemPrompt: row.system_prompt,
+      modelOverride: row.model_override || '',
       executionMode: (row.execution_mode as CoworkExecutionMode) || 'local',
       activeSkillIds,
       agentId: row.agent_id || 'main',
@@ -651,7 +647,7 @@ export class CoworkStore {
     updates: Partial<
       Pick<
         CoworkSession,
-        'title' | 'claudeSessionId' | 'status' | 'cwd' | 'systemPrompt' | 'executionMode'
+        'title' | 'claudeSessionId' | 'status' | 'cwd' | 'systemPrompt' | 'modelOverride' | 'executionMode'
       >
     >,
   ): void {
@@ -678,6 +674,10 @@ export class CoworkStore {
     if (updates.systemPrompt !== undefined) {
       setClauses.push('system_prompt = ?');
       values.push(updates.systemPrompt);
+    }
+    if (updates.modelOverride !== undefined) {
+      setClauses.push('model_override = ?');
+      values.push(updates.modelOverride);
     }
     if (updates.executionMode !== undefined) {
       setClauses.push('execution_mode = ?');
@@ -1072,7 +1072,7 @@ export class CoworkStore {
       memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(
         Number(cfg.get('memoryUserMemoriesMaxItems')),
       ),
-      skipMissedJobs: parseBooleanConfig(cfg.get('skipMissedJobs'), false),
+      skipMissedJobs: parseBooleanConfig(cfg.get('skipMissedJobs'), true),
     };
   }
 
@@ -1619,116 +1619,6 @@ export class CoworkStore {
     `,
       )
       .run(now);
-  }
-
-  async applyTurnMemoryUpdates(
-    options: ApplyTurnMemoryUpdatesOptions,
-  ): Promise<ApplyTurnMemoryUpdatesResult> {
-    const result: ApplyTurnMemoryUpdatesResult = {
-      totalChanges: 0,
-      created: 0,
-      updated: 0,
-      deleted: 0,
-      judgeRejected: 0,
-      llmReviewed: 0,
-      skipped: 0,
-    };
-
-    const extracted = extractTurnMemoryChanges({
-      userText: options.userText,
-      assistantText: options.assistantText,
-      guardLevel: options.guardLevel,
-      maxImplicitAdds: options.implicitEnabled ? 2 : 0,
-    });
-    result.totalChanges = extracted.length;
-
-    // Lazily loaded on first delete operation and reused, avoiding N×M queries.
-    let deleteCandidates: CoworkUserMemory[] | null = null;
-
-    for (const change of extracted) {
-      if (change.action === 'add') {
-        if (!options.implicitEnabled && !change.isExplicit) {
-          result.skipped += 1;
-          continue;
-        }
-        const judge = await judgeMemoryCandidate({
-          text: change.text,
-          isExplicit: change.isExplicit,
-          guardLevel: options.guardLevel,
-          llmEnabled: options.memoryLlmJudgeEnabled,
-        });
-        if (judge.source === 'llm') {
-          result.llmReviewed += 1;
-        }
-        if (!judge.accepted) {
-          result.judgeRejected += 1;
-          result.skipped += 1;
-          continue;
-        }
-
-        const write = this.createOrReviveUserMemory({
-          text: change.text,
-          confidence: change.confidence,
-          isExplicit: change.isExplicit,
-          source: {
-            role: 'user',
-            sessionId: options.sessionId,
-            messageId: options.userMessageId,
-          },
-        });
-
-        if (!change.isExplicit && options.assistantMessageId) {
-          this.addMemorySource(write.memory.id, {
-            role: 'assistant',
-            sessionId: options.sessionId,
-            messageId: options.assistantMessageId,
-          });
-        }
-
-        if (write.created) result.created += 1;
-        else if (write.updated) result.updated += 1;
-        else result.skipped += 1;
-        continue;
-      }
-
-      const key = normalizeMemoryMatchKey(change.text);
-      if (!key) {
-        result.skipped += 1;
-        continue;
-      }
-
-      // Load all candidates once for the first delete operation; reuse for subsequent ones.
-      if (!deleteCandidates) {
-        deleteCandidates = this.listUserMemories({
-          status: 'all',
-          includeDeleted: false,
-          limit: 100,
-        });
-      }
-      const candidates = deleteCandidates;
-      let target: CoworkUserMemory | null = null;
-      let bestScore = 0;
-      for (const entry of candidates) {
-        const currentKey = normalizeMemoryMatchKey(entry.text);
-        if (!currentKey) continue;
-        const score = scoreDeleteMatch(currentKey, key);
-        if (score <= bestScore) continue;
-        bestScore = score;
-        target = entry;
-      }
-
-      if (!target) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const deleted = this.deleteUserMemory(target.id);
-      if (deleted) result.deleted += 1;
-      else result.skipped += 1;
-    }
-
-    this.markOrphanImplicitMemoriesStale();
-    return result;
   }
 
   private getLatestMessageByType(sessionId: string, type: 'user' | 'assistant'): string {

@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import type { Platform } from '../shared/platform';
+import { OpenClawSessionIpc } from './openclawSession/constants';
+import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -151,9 +153,22 @@ contextBridge.exposeInMainWorld('electron', {
       },
     },
     sessionPolicy: {
-      get: () => ipcRenderer.invoke('openclaw:sessionPolicy:get'),
+      get: () => ipcRenderer.invoke(OpenClawSessionPolicyIpc.Get),
       set: (config: { keepAlive: '1d' | '7d' | '30d' | '365d' }) =>
-        ipcRenderer.invoke('openclaw:sessionPolicy:set', config),
+        ipcRenderer.invoke(OpenClawSessionPolicyIpc.Set, config),
+    },
+    session: {
+      patch: (options: {
+        sessionId: string;
+        patch: {
+          model?: string | null;
+          thinkingLevel?: string | null;
+          reasoningLevel?: string | null;
+          elevatedLevel?: string | null;
+          responseUsage?: 'off' | 'tokens' | 'full' | null;
+          sendPolicy?: 'allow' | 'deny' | null;
+        };
+      }) => ipcRenderer.invoke(OpenClawSessionIpc.Patch, options),
     },
   },
   agents: {
@@ -227,12 +242,13 @@ contextBridge.exposeInMainWorld('electron', {
     setConfig: (config: {
       workingDirectory?: string;
       executionMode?: 'auto' | 'local' | 'sandbox';
-      agentEngine?: 'openclaw' | 'yd_cowork';
+      agentEngine?: 'openclaw';
       memoryEnabled?: boolean;
       memoryImplicitUpdateEnabled?: boolean;
       memoryLlmJudgeEnabled?: boolean;
       memoryGuardLevel?: 'strict' | 'standard' | 'relaxed';
       memoryUserMemoriesMaxItems?: number;
+      skipMissedJobs?: boolean;
     }) =>
       ipcRenderer.invoke('cowork:config:set', config),
     listMemoryEntries: (input: {
@@ -372,6 +388,10 @@ contextBridge.exposeInMainWorld('electron', {
     weixinQrLoginStart: () => ipcRenderer.invoke('im:weixin:qr-login-start'),
     weixinQrLoginWait: (accountId?: string) => ipcRenderer.invoke('im:weixin:qr-login-wait', accountId),
 
+    // POPO QR login
+    popoQrLoginStart: () => ipcRenderer.invoke('im:popo:qr-login-start'),
+    popoQrLoginPoll: (taskToken: string) => ipcRenderer.invoke('im:popo:qr-login-poll', taskToken),
+
     // Pairing
     listPairingRequests: (platform: string) => ipcRenderer.invoke('im:pairing:list', platform),
     approvePairingCode: (platform: string, code: string) => ipcRenderer.invoke('im:pairing:approve', platform, code),
@@ -400,6 +420,12 @@ contextBridge.exposeInMainWorld('electron', {
     deleteEmailInstance: (instanceId: string) => ipcRenderer.invoke('im:email:instance:delete', instanceId),
     setEmailInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
       ipcRenderer.invoke('im:email:instance:config:set', instanceId, config, options),
+
+    // WeCom Multi-Instance
+    addWecomInstance: (name: string) => ipcRenderer.invoke('im:wecom:instance:add', name),
+    deleteWecomInstance: (instanceId: string) => ipcRenderer.invoke('im:wecom:instance:delete', instanceId),
+    setWecomInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:wecom:instance:config:set', instanceId, config, options),
 
     // Event listeners
     onStatusChange: (callback: (status: any) => void) => {

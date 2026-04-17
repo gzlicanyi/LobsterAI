@@ -8,6 +8,7 @@ test('defaults hidden OpenClaw session policy to thirty days', () => {
   expect(state.config.openClawSessionPolicy).toEqual({
     keepAlive: '30d',
   });
+  expect(state.config.skipMissedJobs).toBe(true);
 });
 
 test('setConfig preserves loaded OpenClaw session policy', () => {

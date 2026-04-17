@@ -5,12 +5,13 @@
  * to local Cowork sessions so that conversations are visible in the LobsterAI UI.
  */
 
+import { session } from '@electron/remote';
+
+import { PlatformRegistry } from '../../shared/platform';
 import type { CoworkStore } from '../coworkStore';
+import { t } from '../i18n';
 import type { IMStore } from '../im/imStore';
 import type { Platform } from '../im/types';
-import { PlatformRegistry } from '../../shared/platform';
-import { t } from '../i18n';
-import { session } from '@electron/remote';
 
 const LOBSTERAI_SESSION_PREFIX = 'lobsterai:';
 export const DEFAULT_MANAGED_AGENT_ID = 'main';
@@ -197,7 +198,7 @@ export function extractAccountIdFromKey(sessionKey: string): string | null {
   return null;
 }
 
-const MULTI_INSTANCE_PLATFORMS = new Set<Platform>(['dingtalk', 'feishu', 'qq', 'email']);
+const MULTI_INSTANCE_PLATFORMS = new Set<Platform>(['dingtalk', 'feishu', 'qq', 'email', 'wecom']);
 
 /**
  * Resolve the agent binding for a platform, supporting per-instance bindings.

@@ -1,4 +1,4 @@
-import { test, expect, vi } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 vi.mock('electron', () => ({
   app: {
@@ -23,6 +23,7 @@ function createReconcileStore(messages: Array<Record<string, unknown>>) {
     pinned: false,
     cwd: '',
     systemPrompt: '',
+    modelOverride: '',
     executionMode: 'local',
     activeSkillIds: [],
     messages: [...messages],
@@ -328,6 +329,21 @@ function createHistoryStore(messages: Array<Record<string, unknown>>) {
         session.messages.push(created);
         return created;
       },
+      replaceConversationMessages: (sessionId: string, authoritative: Array<{ role: string; text: string }>) => {
+        expect(sessionId).toBe(session.id);
+        session.messages = session.messages.filter(
+          (message) => message.type !== 'user' && message.type !== 'assistant',
+        );
+        for (const entry of authoritative) {
+          session.messages.push({
+            id: `msg-${nextId++}`,
+            type: entry.role,
+            content: entry.text,
+            metadata: { isStreaming: false, isFinal: true },
+            timestamp: nextId,
+          });
+        }
+      },
       updateSession: () => {},
     },
   };
@@ -396,6 +412,22 @@ test('prefetchChannelUserMessages also consumes existing reminder history backlo
   });
 
   expect(getSystemMessages(session).length).toBe(0);
+});
+
+test('syncSystemMessagesFromHistory skips pure heartbeat ack system messages', () => {
+  const { session, store } = createHistoryStore([]);
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const historyMessages = [
+    { role: 'system', content: 'HEARTBEAT_OK' },
+    { role: 'system', content: 'Reminder fired' },
+  ];
+
+  adapter.syncSystemMessagesFromHistory(session.id, historyMessages, {
+    previousCountKnown: false,
+    previousCount: 0,
+  });
+
+  expect(getSystemMessages(session).map((message) => message.content)).toEqual(['Reminder fired']);
 });
 
 test('getSessionKeysForSession prefers channel keys before managed fallback', () => {

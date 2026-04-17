@@ -222,6 +222,12 @@ test('no console.warn when all metadata is valid or null', () => {
   warnSpy.mockRestore();
 });
 
+test('getConfig defaults skipMissedJobs to true when config is missing', () => {
+  const config = store.getConfig();
+
+  expect(config.skipMissedJobs).toBe(true);
+});
+
 test('backfillEmptyAgentModels assigns the current default model to empty agents only', () => {
   const now = Date.now();
   db.prepare(

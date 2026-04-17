@@ -1,9 +1,10 @@
+import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import { app } from 'electron';
 import { EventEmitter } from 'events';
-import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import Database from 'better-sqlite3';
+
 import { DB_FILENAME } from './appConstants';
 
 type ChangePayload<T = unknown> = {
@@ -61,6 +62,7 @@ export class SqliteStore {
         pinned INTEGER NOT NULL DEFAULT 0,
         cwd TEXT NOT NULL,
         system_prompt TEXT NOT NULL DEFAULT '',
+        model_override TEXT NOT NULL DEFAULT '',
         execution_mode TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -186,6 +188,10 @@ export class SqliteStore {
 
       if (!colNames.includes('active_skill_ids')) {
         this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN active_skill_ids TEXT;');
+      }
+
+      if (!colNames.includes('model_override')) {
+        this.db.exec("ALTER TABLE cowork_sessions ADD COLUMN model_override TEXT NOT NULL DEFAULT '';");
       }
 
       // Migration: Add sequence column to cowork_messages

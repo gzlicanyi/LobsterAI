@@ -45,8 +45,8 @@ const DEFINITIONS = [
     id: 'dingtalk',
     label: 'DingTalk',
     region: 'china',
-    channel: 'dingtalk',
-    channelAliases: [],
+    channel: 'dingtalk-connector',
+    channelAliases: ['dingtalk'],
     logo: 'dingding.png',
     guideUrl:
       'https://lobsterai.youdao.com/#/docs/lobsterai_im_bot_config_guide/%E9%92%89%E9%92%89-im-%E6%9C%BA%E5%99%A8%E4%BA%BA%E9%85%8D%E7%BD%AE',
@@ -65,8 +65,8 @@ const DEFINITIONS = [
     id: 'wecom',
     label: 'WeCom',
     region: 'china',
-    channel: 'wecom-openclaw-plugin',
-    channelAliases: ['wecom'],
+    channel: 'wecom',
+    channelAliases: ['wecom-openclaw-plugin'],
     logo: 'wecom.png',
     guideUrl:
       'https://lobsterai.youdao.com/#/docs/lobsterai_im_bot_config_guide/%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%E6%9C%BA%E5%99%A8%E4%BA%BA%E9%85%8D%E7%BD%AE',

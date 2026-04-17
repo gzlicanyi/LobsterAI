@@ -1,10 +1,10 @@
-import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { WebContents } from 'electron';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, powerSaveBlocker, protocol, session, shell } from 'electron';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import type { OpenClawSessionPatch } from '../common/openclawSession';
 import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
 import { migrateScheduledTaskRunsToOpenclaw, migrateScheduledTasksToOpenclaw } from '../scheduledTask/migrate';
 import { PlatformRegistry } from '../shared/platform';
@@ -20,7 +20,7 @@ import {
   readAllowFromStore,
   rejectPairingRequest,
 } from './im/imPairingStore';
-import type { DingTalkInstanceConfig, EmailMultiInstanceConfig, FeishuInstanceConfig, Platform, QQInstanceConfig } from './im/types';
+import type { DingTalkInstanceConfig, EmailMultiInstanceConfig, FeishuInstanceConfig, Platform, QQInstanceConfig, WecomInstanceConfig } from './im/types';
 import {
   getCronJobService,
   initCronJobServiceManager,
@@ -28,10 +28,10 @@ import {
   registerScheduledTaskHandlers,
 } from './ipcHandlers/scheduledTask';
 import {
-  ClaudeRuntimeAdapter,
   type CoworkAgentEngine,
   CoworkEngineRouter,
   OpenClawRuntimeAdapter,
+  type PermissionResult,
 } from './libs/agentEngine';
 import { cancelActiveDownload, downloadUpdate, installUpdate } from './libs/appUpdateInstaller';
 import { clearServerModelMetadata, getCurrentApiConfig, resolveAllEnabledProviderConfigs, resolveCurrentApiConfig, resolveRawApiConfig, setAuthTokensGetter, setServerBaseUrlGetter, setStoreGetter, updateServerModelMetadata } from './libs/claudeSettings';
@@ -44,7 +44,6 @@ import {
 import { saveCoworkApiConfig } from './libs/coworkConfigStore';
 import { getCoworkLogPath } from './libs/coworkLogger';
 import { registerProxyTokenRefresher, startCoworkOpenAICompatProxy, stopCoworkOpenAICompatProxy } from './libs/coworkOpenAICompatProxy';
-import { CoworkRunner } from './libs/coworkRunner';
 import { generateSessionTitle, probeCoworkModelReadiness } from './libs/coworkUtil';
 import { getServerApiBaseUrl, refreshEndpointsTestMode } from './libs/endpoints';
 import { mergeEnterpriseOpenclawConfig, resolveEnterpriseConfigPath, syncEnterpriseConfig } from './libs/enterpriseConfigSync';
@@ -84,6 +83,7 @@ import {
 import { getLogFilePath, getRecentMainLogEntries, initLogger } from './logger';
 import type { McpServerFormData } from './mcpStore';
 import { McpStore } from './mcpStore';
+import { OpenClawSessionIpc } from './openclawSession/constants';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 import { loadOpenClawSessionPolicyConfig, saveOpenClawSessionPolicyConfig } from './openclawSessionPolicy/store';
 import { SkillManager } from './skillManager';
@@ -106,6 +106,9 @@ const IPC_MAX_KEYS = 80;
 const IPC_MAX_ITEMS = 40;
 const MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ENGINE_NOT_READY_CODE = 'ENGINE_NOT_READY';
+const PowerSaveBlockerType = {
+  PreventAppSuspension: 'prevent-app-suspension',
+} as const;
 const MIME_EXTENSION_MAP: Record<string, string> = {
   'image/png': '.png',
   'image/jpeg': '.jpg',
@@ -119,6 +122,55 @@ const MIME_EXTENSION_MAP: Record<string, string> = {
   'application/json': '.json',
   'text/csv': '.csv',
 };
+
+function sanitizeOptionalPatchValue(
+  value: unknown,
+  maxChars = IPC_STRING_MAX_CHARS,
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'string') {
+    throw new Error('Session patch value must be a string or null.');
+  }
+  const trimmed = value.trim();
+  if (trimmed.length > maxChars) {
+    throw new Error('Session patch value is too long.');
+  }
+  return trimmed;
+}
+
+function sanitizeOpenClawSessionPatch(input: unknown): OpenClawSessionPatch {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid session patch payload.');
+  }
+
+  const source = input as Record<string, unknown>;
+  const patch: OpenClawSessionPatch = {};
+
+  const model = sanitizeOptionalPatchValue(source.model);
+  if (model !== undefined) patch.model = model;
+
+  const thinkingLevel = sanitizeOptionalPatchValue(source.thinkingLevel);
+  if (thinkingLevel !== undefined) patch.thinkingLevel = thinkingLevel;
+
+  const reasoningLevel = sanitizeOptionalPatchValue(source.reasoningLevel);
+  if (reasoningLevel !== undefined) patch.reasoningLevel = reasoningLevel;
+
+  const elevatedLevel = sanitizeOptionalPatchValue(source.elevatedLevel);
+  if (elevatedLevel !== undefined) patch.elevatedLevel = elevatedLevel;
+
+  const responseUsage = sanitizeOptionalPatchValue(source.responseUsage);
+  if (responseUsage !== undefined) patch.responseUsage = responseUsage as OpenClawSessionPatch['responseUsage'];
+
+  const sendPolicy = sanitizeOptionalPatchValue(source.sendPolicy);
+  if (sendPolicy !== undefined) patch.sendPolicy = sendPolicy as OpenClawSessionPatch['sendPolicy'];
+
+  if (Object.keys(patch).length === 0) {
+    throw new Error('Session patch is empty.');
+  }
+
+  return patch;
+}
 
 const sanitizeExportFileName = (value: string): string => {
   const sanitized = value.replace(INVALID_FILE_NAME_PATTERN, ' ').replace(/\s+/g, ' ').trim();
@@ -174,6 +226,12 @@ const buildAvailableOpenClawProviders = (): Record<string, { models: Array<{ id:
   return providerMap;
 };
 
+// Provider IDs that were renamed in past refactors. Any stored agent model ref
+// using an old ID is rewritten to the current ID on startup.
+const RENAMED_PROVIDER_IDS: Record<string, string> = {
+  'github-copilot': 'lobsterai-copilot',
+};
+
 const migrateAgentModelRefs = (): number => {
   const defaultModelRef = resolveDefaultAgentModelRef();
   if (!defaultModelRef) return 0;
@@ -183,8 +241,20 @@ const migrateAgentModelRefs = (): number => {
   let changed = 0;
 
   for (const agent of agents) {
-    const normalizedModel = agent.model.trim();
+    let normalizedModel = agent.model.trim();
     if (!normalizedModel) continue;
+
+    // Apply explicit provider rename map before qualification so that renamed
+    // provider IDs (e.g. 'github-copilot' → 'lobsterai-copilot') are corrected
+    // even though resolveQualifiedAgentModelRef treats any slash-ref as valid.
+    const slashIdx = normalizedModel.indexOf('/');
+    if (slashIdx > 0) {
+      const storedProviderId = normalizedModel.slice(0, slashIdx);
+      const renamedId = RENAMED_PROVIDER_IDS[storedProviderId];
+      if (renamedId) {
+        normalizedModel = `${renamedId}${normalizedModel.slice(slashIdx)}`;
+      }
+    }
 
     const qualification = resolveQualifiedAgentModelRef({
       agentModel: normalizedModel,
@@ -198,7 +268,7 @@ const migrateAgentModelRefs = (): number => {
       continue;
     }
 
-    if (qualification.status !== 'qualified' || qualification.primaryModel === normalizedModel) {
+    if (qualification.status !== 'qualified' || qualification.primaryModel === agent.model.trim()) {
       continue;
     }
 
@@ -649,15 +719,16 @@ process.on('exit', (code) => {
 
 let store: SqliteStore | null = null;
 let coworkStore: CoworkStore | null = null;
-let coworkRunner: CoworkRunner | null = null;
-let claudeRuntimeAdapter: ClaudeRuntimeAdapter | null = null;
 let openClawRuntimeAdapter: OpenClawRuntimeAdapter | null = null;
 let coworkEngineRouter: CoworkEngineRouter | null = null;
 let skillManager: SkillManager | null = null;
 let mcpStore: McpStore | null = null;
 let mcpServerManager: McpServerManager | null = null;
 let mcpBridgeServer: McpBridgeServer | null = null;
-let mcpBridgeSecret: string | null = null;
+// Generated eagerly so the secret is available before the first syncOpenClawConfig
+// call — the gateway process inherits it via LOBSTER_MCP_BRIDGE_SECRET env var at
+// spawn time, avoiding a restart just to pick up the correct secret.
+let mcpBridgeSecret: string = require('crypto').randomUUID();
 let mcpBridgeStartPromise: Promise<McpBridgeConfig | null> | null = null;
 let imGatewayManager: IMGatewayManager | null = null;
 let storeInitPromise: Promise<SqliteStore> | null = null;
@@ -668,6 +739,20 @@ let openClawStatusForwarderBound = false;
 let coworkRuntimeForwarderBound = false;
 let memoryMigrationDone = false;
 let preventSleepBlockerId: number | null = null;
+
+function setPreventSleepBlockerEnabled(enabled: boolean): void {
+  if (enabled) {
+    if (preventSleepBlockerId === null || !powerSaveBlocker.isStarted(preventSleepBlockerId)) {
+      preventSleepBlockerId = powerSaveBlocker.start(PowerSaveBlockerType.PreventAppSuspension);
+    }
+    return;
+  }
+
+  if (preventSleepBlockerId !== null && powerSaveBlocker.isStarted(preventSleepBlockerId)) {
+    powerSaveBlocker.stop(preventSleepBlockerId);
+  }
+  preventSleepBlockerId = null;
+}
 
 const initStore = async (): Promise<SqliteStore> => {
   if (!storeInitPromise) {
@@ -862,8 +947,7 @@ const getAgentManager = () => {
 };
 
 const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
-  const configured = getCoworkStore().getConfig().agentEngine;
-  return configured === 'openclaw' ? 'openclaw' : 'yd_cowork';
+  return getCoworkStore().getConfig().agentEngine;
 };
 
 const getOpenClawConfigSync = (): OpenClawConfigSync => {
@@ -902,11 +986,11 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
           return [];
         }
       },
-      getWecomConfig: () => {
+      getWecomInstances: () => {
         try {
-          return getIMGatewayManager().getConfig().wecom;
+          return getIMGatewayManager().getIMStore().getWecomInstances();
         } catch {
-          return null;
+          return [];
         }
       },
       getPopoConfig: () => {
@@ -969,6 +1053,7 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
           tools: mcpServerManager?.toolManifest ?? [],
         };
       },
+      getMcpBridgeSecret: () => mcpBridgeSecret,
       getAgents: () => getCoworkStore().listAgents(),
     });
   }
@@ -1028,16 +1113,14 @@ const scheduleDeferredGatewayRestart = (reason: string) => {
 
 const syncOpenClawConfig = async (
   options: { reason: string; restartGatewayIfRunning?: boolean } = { reason: 'unknown' },
-): Promise<{ success: boolean; changed: boolean; status?: OpenClawEngineStatus; error?: string }> => {
-  console.log(`[OpenClaw] syncOpenClawConfig: called (reason: ${options.reason}, restart gateway if running: ${options.restartGatewayIfRunning ? 'yes' : 'no'})`);
-  // Always write openclaw.json immediately. OpenClaw's built-in file-watcher
-  // will detect the change and gracefully reload (waiting for active tasks to
-  // complete before restarting, up to a 30s drain timeout).  Previous versions
-  // deferred the file write when active workloads existed, but that caused
-  // stale config (e.g. model switches not taking effect for new sessions).
+): Promise<{ success: boolean; changed: boolean; mcpBridgeConfigChanged?: boolean; status?: OpenClawEngineStatus; error?: string }> => {
+  const D = '[GW-RESTART-DIAG]';
+  console.log(`${D} ──── syncOpenClawConfig START reason=${options.reason} restartIfRunning=${!!options.restartGatewayIfRunning}`);
 
   const syncResult = getOpenClawConfigSync().sync(options.reason);
+  console.log(`${D} sync() ok=${syncResult.ok} changed=${syncResult.changed} bindingsChanged=${!!syncResult.bindingsChanged}`);
   if (!syncResult.ok) {
+    console.log(`${D} sync FAILED: ${syncResult.error}`);
     const status = getOpenClawEngineManager().setExternalError(
       `OpenClaw config sync failed: ${syncResult.error || 'unknown error'}`,
     );
@@ -1049,36 +1132,63 @@ const syncOpenClawConfig = async (
     };
   }
 
-  // After every successful config sync, merge enterprise openclaw.json
-  // fields into the generated runtime config. Enterprise values win.
   try {
     mergeEnterpriseOpenclawConfig(getOpenClawEngineManager().getConfigPath());
   } catch { /* non-critical */ }
 
-  // Update secret env vars so the gateway process receives the latest
-  // plaintext credentials via environment variables (openclaw.json only
-  // contains ${VAR} placeholders, never plaintext secrets).
   const nextSecretEnvVars = getOpenClawConfigSync().collectSecretEnvVars();
   const prevSecretEnvVars = getOpenClawEngineManager().getSecretEnvVars();
   const secretEnvVarsChanged = JSON.stringify(nextSecretEnvVars) !== JSON.stringify(prevSecretEnvVars);
   getOpenClawEngineManager().setSecretEnvVars(nextSecretEnvVars);
 
-  // When secret env vars change, the running gateway must be restarted even if
-  // the caller didn't request it — the ${VAR} placeholders in openclaw.json
-  // resolve from the process environment which is fixed at spawn time.
-  const needsHardRestart = secretEnvVarsChanged || (syncResult.changed && options.restartGatewayIfRunning);
+  // Diagnostic: print which env vars changed
+  if (secretEnvVarsChanged) {
+    const allKeys = new Set([...Object.keys(prevSecretEnvVars), ...Object.keys(nextSecretEnvVars)]);
+    const added: string[] = [];
+    const removed: string[] = [];
+    const modified: string[] = [];
+    for (const k of allKeys) {
+      const prev = prevSecretEnvVars[k];
+      const next = nextSecretEnvVars[k];
+      if (prev === next) continue;
+      if (prev === undefined) { added.push(k); }
+      else if (next === undefined) { removed.push(k); }
+      else { modified.push(k); }
+    }
+    console.log(`${D} SECRET ENV VARS CHANGED!`);
+    if (added.length) console.log(`${D}   added: ${added.join(', ')}`);
+    if (removed.length) console.log(`${D}   removed: ${removed.join(', ')}`);
+    for (const k of modified) {
+      const p = (prevSecretEnvVars[k] || '').slice(0, 12);
+      const n = (nextSecretEnvVars[k] || '').slice(0, 12);
+      console.log(`${D}   modified: ${k} prev=${p}… next=${n}…`);
+    }
+  } else {
+    console.log(`${D} secretEnvVars unchanged (${Object.keys(nextSecretEnvVars).length} keys)`);
+  }
+
+  // Force a hard restart when the mcp-bridge callbackUrl or tools changed,
+  // regardless of the restartGatewayIfRunning flag.  The OpenClaw gateway
+  // pins its config snapshot at startup, so a hot-reload alone won't pick
+  // up a new callbackUrl — the gateway must be fully restarted.
+  const mcpBridgeForceRestart = !!syncResult.mcpBridgeConfigChanged;
+  const needsHardRestart = secretEnvVarsChanged || syncResult.bindingsChanged || mcpBridgeForceRestart || (syncResult.changed && options.restartGatewayIfRunning);
+
+  console.log(`${D} needsHardRestart=${needsHardRestart} (envChanged=${secretEnvVarsChanged} bindingsChanged=${!!syncResult.bindingsChanged} mcpBridgeChanged=${mcpBridgeForceRestart} configChanged=${syncResult.changed} restartFlag=${!!options.restartGatewayIfRunning})`);
 
   if (!needsHardRestart) {
-    // Config file was written; OpenClaw's file-watcher will handle the reload.
+    console.log(`${D} ──── NO RESTART, hot-reload only. reason=${options.reason}`);
     return {
       success: true,
       changed: syncResult.changed,
+      mcpBridgeConfigChanged: syncResult.mcpBridgeConfigChanged,
     };
   }
 
   const manager = getOpenClawEngineManager();
   const status = manager.getStatus();
   if (status.phase !== 'running') {
+    console.log(`${D} ──── RESTART NEEDED but gateway not running (phase=${status.phase}), skipping. reason=${options.reason}`);
     return {
       success: true,
       changed: true,
@@ -1086,10 +1196,8 @@ const syncOpenClawConfig = async (
     };
   }
 
-  // Hard restart required (e.g. secret env vars changed) but active workloads
-  // exist — defer the restart to avoid killing in-flight sessions.
   if (hasActiveGatewayWorkloads()) {
-    console.log(`[OpenClaw] syncOpenClawConfig: deferring hard restart because active workloads exist (reason: ${options.reason})`);
+    console.log(`${D} ──── RESTART DEFERRED (active workloads). reason=${options.reason}`);
     scheduleDeferredGatewayRestart(options.reason);
     return {
       success: true,
@@ -1098,11 +1206,8 @@ const syncOpenClawConfig = async (
     };
   }
 
-  // Tear down the runtime adapter's WebSocket client BEFORE killing the gateway process.
-  // This prevents a race where the old client's async `onClose` fires after a new client
-  // has already been created, destroying the new connection.
+  console.log(`${D} ──── HARD RESTART EXECUTING. reason=${options.reason}`);
   if (openClawRuntimeAdapter) {
-    console.log(`[OpenClaw] syncOpenClawConfig: pre-emptively disconnecting runtime adapter before gateway restart (reason: ${options.reason})`);
     openClawRuntimeAdapter.disconnectGatewayClient();
   }
 
@@ -1121,18 +1226,6 @@ const syncOpenClawConfig = async (
     changed: true,
     status: restarted,
   };
-};
-
-const getCoworkRunner = () => {
-  if (!coworkRunner) {
-    coworkRunner = new CoworkRunner(getCoworkStore());
-
-    // Provide MCP server configuration to the runner
-    coworkRunner.setMcpServerProvider(() => {
-      return getMcpStore().getEnabledServers();
-    });
-  }
-  return coworkRunner;
 };
 
 const bindCoworkRuntimeForwarder = (): void => {
@@ -1221,9 +1314,6 @@ const bindCoworkRuntimeForwarder = (): void => {
 
 const getCoworkEngineRouter = () => {
   if (!coworkEngineRouter) {
-    if (!claudeRuntimeAdapter) {
-      claudeRuntimeAdapter = new ClaudeRuntimeAdapter(getCoworkRunner());
-    }
     if (!openClawRuntimeAdapter) {
       openClawRuntimeAdapter = new OpenClawRuntimeAdapter(getCoworkStore(), getOpenClawEngineManager());
       // Wire up channel session sync for IM conversations via OpenClaw
@@ -1246,7 +1336,6 @@ const getCoworkEngineRouter = () => {
     coworkEngineRouter = new CoworkEngineRouter({
       getCurrentEngine: resolveCoworkAgentEngine,
       openclawRuntime: openClawRuntimeAdapter,
-      claudeRuntime: claudeRuntimeAdapter,
     });
   }
   return coworkEngineRouter;
@@ -1283,12 +1372,6 @@ const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
   mcpBridgeStartPromise = (async (): Promise<McpBridgeConfig | null> => {
   try {
     console.log('[McpBridge] startMcpBridge called');
-
-    // Generate a per-session secret for bridge auth
-    if (!mcpBridgeSecret) {
-      const crypto = await import('crypto');
-      mcpBridgeSecret = crypto.randomUUID();
-    }
 
     // Discover MCP tools (may be empty if no servers configured)
     const enabledServers = getMcpStore().getEnabledServers();
@@ -1424,8 +1507,9 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
       const toolCount = bridgeConfig?.tools.length ?? 0;
       console.log(`[McpBridge] refresh: ${toolCount} tools discovered`);
 
-      // 3. Sync openclaw.json — OpenClaw's file watcher will hot-reload;
-      // hard restart only happens when secret env vars change.
+      // 3. Sync openclaw.json — the gateway will hard-restart when the
+      // mcp-bridge callbackUrl or tools change, ensuring the gateway picks
+      // up the new config (it pins a snapshot at startup).
       const syncResult = await syncOpenClawConfig({
         reason: 'mcp-server-changed',
       });
@@ -1434,7 +1518,7 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
         return { tools: toolCount, error: syncResult.error };
       }
 
-      console.log(`[McpBridge] refresh complete: ${toolCount} tools, gateway restarted=${syncResult.changed}`);
+      console.log(`[McpBridge] refresh complete: ${toolCount} tools, configChanged=${syncResult.changed}, mcpBridgeChanged=${!!syncResult.mcpBridgeConfigChanged}`);
       return { tools: toolCount };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -1977,16 +2061,7 @@ if (!gotTheLock) {
       return { success: false, error: 'Invalid parameter: enabled must be boolean' };
     }
     try {
-      if (enabled) {
-        if (preventSleepBlockerId === null || !powerSaveBlocker.isStarted(preventSleepBlockerId)) {
-          preventSleepBlockerId = powerSaveBlocker.start('prevent-app-suspension');
-        }
-      } else {
-        if (preventSleepBlockerId !== null && powerSaveBlocker.isStarted(preventSleepBlockerId)) {
-          powerSaveBlocker.stop(preventSleepBlockerId);
-          preventSleepBlockerId = null;
-        }
-      }
+      setPreventSleepBlockerEnabled(enabled);
       getStore().set('prevent_sleep_enabled', enabled);
       return { success: true };
     } catch (error) {
@@ -3144,10 +3219,8 @@ if (!gotTheLock) {
 
   ipcMain.handle(OpenClawSessionPolicyIpc.Get, async () => {
     try {
-      return {
-        success: true,
-        config: loadOpenClawSessionPolicyConfig(getStore()),
-      };
+      const config = loadOpenClawSessionPolicyConfig(getStore());
+      return { success: true, config };
     } catch (error) {
       return {
         success: false,
@@ -3158,15 +3231,53 @@ if (!gotTheLock) {
 
   ipcMain.handle(OpenClawSessionPolicyIpc.Set, async (_event, config: unknown) => {
     try {
-      const savedConfig = saveOpenClawSessionPolicyConfig(getStore(), config);
-      return {
-        success: true,
-        config: savedConfig,
-      };
+      const saved = saveOpenClawSessionPolicyConfig(getStore(), config);
+      // Persist first and let the caller decide when to perform a unified sync/restart.
+      await syncOpenClawConfig({ reason: 'session-policy-updated', restartGatewayIfRunning: false });
+      return { success: true, config: saved };
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to save OpenClaw session policy',
+      };
+    }
+  });
+
+  ipcMain.handle(OpenClawSessionIpc.Patch, async (_event, input: unknown) => {
+    try {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        throw new Error('Invalid OpenClaw session patch input.');
+      }
+
+      const request = input as { sessionId?: unknown; patch?: unknown };
+      const sessionId = typeof request.sessionId === 'string' ? request.sessionId.trim() : '';
+      if (!sessionId) {
+        throw new Error('Session ID is required.');
+      }
+
+      const patch = sanitizeOpenClawSessionPatch(request.patch);
+      const runtime = getCoworkEngineRouter();
+      await runtime.patchSession(sessionId, patch);
+
+      if (patch.model !== undefined) {
+        getCoworkStore().updateSession(sessionId, {
+          modelOverride: patch.model ?? '',
+        });
+      }
+
+      const session = getCoworkStore().getSession(sessionId);
+      if (!session) {
+        throw new Error(`Session ${sessionId} not found`);
+      }
+
+      return {
+        success: true,
+        session,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to patch OpenClaw session',
       };
     }
   });
@@ -3327,17 +3438,16 @@ if (!gotTheLock) {
     memoryLlmJudgeEnabled?: boolean;
     memoryGuardLevel?: 'strict' | 'standard' | 'relaxed';
     memoryUserMemoriesMaxItems?: number;
+    skipMissedJobs?: boolean;
   }) => {
     try {
       const normalizedExecutionMode =
         config.executionMode && String(config.executionMode) === 'container'
           ? 'local'
           : config.executionMode;
-      const normalizedAgentEngine = config.agentEngine === 'yd_cowork'
-        ? 'yd_cowork'
-        : config.agentEngine === 'openclaw'
-          ? 'openclaw'
-          : undefined;
+      const normalizedAgentEngine = config.agentEngine === 'openclaw'
+        ? 'openclaw'
+        : undefined;
       const normalizedMemoryEnabled = typeof config.memoryEnabled === 'boolean'
         ? config.memoryEnabled
         : undefined;
@@ -3359,6 +3469,9 @@ if (!gotTheLock) {
             Math.min(MAX_MEMORY_USER_MEMORIES_MAX_ITEMS, Math.floor(config.memoryUserMemoriesMaxItems))
           )
         : undefined;
+      const normalizedSkipMissedJobs = typeof config.skipMissedJobs === 'boolean'
+        ? config.skipMissedJobs
+        : undefined;
       const normalizedConfig: Parameters<CoworkStore['setConfig']>[0] = {
         ...config,
         executionMode: normalizedExecutionMode,
@@ -3368,6 +3481,7 @@ if (!gotTheLock) {
         memoryLlmJudgeEnabled: normalizedMemoryLlmJudgeEnabled,
         memoryGuardLevel: normalizedMemoryGuardLevel,
         memoryUserMemoriesMaxItems: normalizedMemoryUserMemoriesMaxItems,
+        skipMissedJobs: normalizedSkipMissedJobs,
       };
       const previousConfig = getCoworkStore().getConfig();
       const previousWorkingDir = previousConfig.workingDirectory;
@@ -3667,6 +3781,25 @@ if (!gotTheLock) {
       return { success: true, ...result };
     } catch (error) {
       return { success: false, connected: false, message: error instanceof Error ? error.message : 'Weixin QR login failed' };
+    }
+  });
+
+  // POPO QR login
+  ipcMain.handle('im:popo:qr-login-start', async () => {
+    try {
+      const result = getIMGatewayManager().popoQrLoginStart();
+      return { success: true, ...result };
+    } catch (error) {
+      return { success: false, message: error instanceof Error ? error.message : 'Failed to start POPO QR login' };
+    }
+  });
+
+  ipcMain.handle('im:popo:qr-login-poll', async (_event, taskToken: string) => {
+    try {
+      const result = await getIMGatewayManager().popoQrLoginPoll(taskToken);
+      return result;
+    } catch (error) {
+      return { success: false, message: error instanceof Error ? error.message : 'POPO QR login poll failed' };
     }
   });
 
@@ -3991,6 +4124,26 @@ if (!gotTheLock) {
     }
   });
 
+  // WeCom Multi-Instance handlers
+  ipcMain.handle('im:wecom:instance:add', async (_event, name: string) => {
+    try {
+      const instanceId = crypto.randomUUID();
+      const { DEFAULT_WECOM_CONFIG: defaults } = await import('./im/types');
+      const instance = {
+        ...defaults,
+        instanceId,
+        instanceName: name || 'WeCom Bot',
+      };
+      getIMGatewayManager().getIMStore().setWecomInstanceConfig(instanceId, instance);
+      return { success: true, instance };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to add WeCom instance',
+      };
+    }
+  });
+
   ipcMain.handle('im:email:instance:delete', async (_event, instanceId: string) => {
     try {
       getIMGatewayManager().getIMStore().deleteEmailInstance(instanceId);
@@ -4006,6 +4159,21 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle('im:wecom:instance:delete', async (_event, instanceId: string) => {
+    try {
+      getIMGatewayManager().getIMStore().deleteWecomInstance(instanceId);
+      if (getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to delete WeCom instance',
+      };
+    }
+  });
+
   ipcMain.handle('im:email:instance:config:set', async (_event, instanceId: string, config: Partial<EmailMultiInstanceConfig['instances'][number]>, options?: { syncGateway?: boolean }) => {
     try {
       getIMGatewayManager().getIMStore().setEmailInstanceConfig(instanceId, config);
@@ -4017,6 +4185,21 @@ if (!gotTheLock) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to set email instance config',
+      };
+    }
+  });
+
+  ipcMain.handle('im:wecom:instance:config:set', async (_event, instanceId: string, config: Partial<WecomInstanceConfig>, options?: { syncGateway?: boolean }) => {
+    try {
+      getIMGatewayManager().getIMStore().setWecomInstanceConfig(instanceId, config);
+      if (options?.syncGateway && getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to set WeCom instance config',
       };
     }
   });
@@ -5307,7 +5490,7 @@ if (!gotTheLock) {
     const preventSleepEnabled = getStore().get<boolean>('prevent_sleep_enabled');
     if (preventSleepEnabled) {
       try {
-        preventSleepBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+        setPreventSleepBlockerEnabled(true);
       } catch (err) {
         console.error('[Main] Failed to start prevent-sleep blocker:', err);
       }

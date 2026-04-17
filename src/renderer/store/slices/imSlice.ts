@@ -4,26 +4,29 @@
  */
 
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+
 import type {
-  IMGatewayConfig,
-  IMGatewayStatus,
-  DingTalkOpenClawConfig,
   DingTalkInstanceConfig,
   DingTalkMultiInstanceConfig,
-  FeishuOpenClawConfig,
+  DingTalkOpenClawConfig,
+  DiscordOpenClawConfig,
   FeishuInstanceConfig,
   FeishuMultiInstanceConfig,
-  TelegramOpenClawConfig,
-  QQOpenClawConfig,
+  FeishuOpenClawConfig,
+  IMGatewayConfig,
+  IMGatewayStatus,
+  IMSettings,
+  NeteaseBeeChanConfig,
+  NimConfig,
+  PopoOpenClawConfig,
   QQInstanceConfig,
   QQMultiInstanceConfig,
-  DiscordOpenClawConfig,
-  NimConfig,
-  NeteaseBeeChanConfig,
+  QQOpenClawConfig,
+  TelegramOpenClawConfig,
+  WecomInstanceConfig,
+  WecomMultiInstanceConfig,
   WecomOpenClawConfig,
-  PopoOpenClawConfig,
   WeixinOpenClawConfig,
-  IMSettings,
   EmailInstanceConfig,
   EmailMultiInstanceConfig,
 } from '../../types/im';
@@ -146,8 +149,31 @@ const imSlice = createSlice({
     setNeteaseBeeChanConfig: (state, action: PayloadAction<Partial<NeteaseBeeChanConfig>>) => {
       state.config['netease-bee'] = { ...state.config['netease-bee'], ...action.payload };
     },
+    /** @deprecated Use setWecomInstanceConfig instead */
     setWecomConfig: (state, action: PayloadAction<Partial<WecomOpenClawConfig>>) => {
-      state.config.wecom = { ...state.config.wecom, ...action.payload };
+      // Backward compat: update first instance if exists
+      const first = state.config.wecom.instances[0];
+      if (first) {
+        Object.assign(first, action.payload);
+      }
+    },
+    setWecomInstances: (state, action: PayloadAction<WecomInstanceConfig[]>) => {
+      state.config.wecom = { instances: action.payload };
+    },
+    setWecomMultiInstanceConfig: (state, action: PayloadAction<WecomMultiInstanceConfig>) => {
+      state.config.wecom = action.payload;
+    },
+    setWecomInstanceConfig: (state, action: PayloadAction<{ instanceId: string; config: Partial<WecomOpenClawConfig> }>) => {
+      const inst = state.config.wecom.instances.find(i => i.instanceId === action.payload.instanceId);
+      if (inst) Object.assign(inst, action.payload.config);
+    },
+    addWecomInstance: (state, action: PayloadAction<WecomInstanceConfig>) => {
+      state.config.wecom.instances.push(action.payload);
+    },
+    removeWecomInstance: (state, action: PayloadAction<string>) => {
+      state.config.wecom.instances = state.config.wecom.instances.filter(
+        i => i.instanceId !== action.payload
+      );
     },
     setPopoConfig: (state, action: PayloadAction<Partial<PopoOpenClawConfig>>) => {
       state.config.popo = { ...state.config.popo, ...action.payload };
@@ -216,6 +242,11 @@ export const {
   setNimConfig,
   setNeteaseBeeChanConfig,
   setWecomConfig,
+  setWecomInstances,
+  setWecomMultiInstanceConfig,
+  setWecomInstanceConfig,
+  addWecomInstance,
+  removeWecomInstance,
   setPopoConfig,
   setWeixinConfig,
   setEmailInstances,

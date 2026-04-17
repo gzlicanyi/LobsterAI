@@ -5,13 +5,15 @@
  * OpenClaw's ask-user-question plugin calls /askuser for user confirmation dialogs.
  * Binds to 127.0.0.1 only (local traffic).
  */
+import crypto from 'crypto';
 import http from 'http';
 import net from 'net';
-import crypto from 'crypto';
+
+import { getToolTextPreview, looksLikeTransportErrorText, serializeForLog, serializeToolContentForLog } from './mcpLog';
 import type { McpServerManager } from './mcpServerManager';
 
 const log = (level: string, msg: string) => {
-  const formatted = `[McpBridge][${level}] ${msg}`;
+  const formatted = `[McpBridge:HTTP][${level}] ${msg}`;
   if (level === 'ERROR') {
     console.error(formatted);
   } else if (level === 'WARN') {
@@ -54,6 +56,7 @@ export class McpBridgeServer {
   constructor(mcpManager: McpServerManager, secret: string) {
     this.mcpManager = mcpManager;
     this.secret = secret;
+    log('INFO', `McpBridgeServer created, secret prefix="${secret.slice(0, 8)}…"`);
   }
 
   get port(): number | null {
@@ -107,7 +110,13 @@ export class McpBridgeServer {
 
     return new Promise((resolve, reject) => {
       const srv = http.createServer((req, res) => {
-        this.handleRequest(req, res);
+        this.handleRequest(req, res).catch((err) => {
+          log('ERROR', `Unhandled error in handleRequest: ${err instanceof Error ? err.message : String(err)}`);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Internal server error' }));
+          }
+        });
       });
 
       srv.on('error', (err) => {
@@ -145,6 +154,8 @@ export class McpBridgeServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    log('DEBUG', `HTTP ${req.method} ${req.url}`);
+
     if (req.method !== 'POST') {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
@@ -154,6 +165,7 @@ export class McpBridgeServer {
     // Verify secret token (accept either header name)
     const authHeader = req.headers['x-mcp-bridge-secret'] || req.headers['x-ask-user-secret'];
     if (authHeader !== this.secret) {
+      log('WARN', `Auth rejected for ${req.url}: header=${authHeader ? 'present-but-mismatch' : 'missing'}`);
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
       return;
@@ -235,13 +247,22 @@ export class McpBridgeServer {
         args: Record<string, unknown>;
       };
 
+      log('INFO', `Execute request received for server="${server}" tool="${tool}" with arguments ${serializeForLog(args || {})}`);
+
       if (!server || !tool) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing "server" or "tool" field' }));
         return;
       }
 
+      const t0 = Date.now();
       const result = await this.mcpManager.callTool(server, tool, args || {});
+      const contentPreview = serializeToolContentForLog(result.content);
+      const textPreview = getToolTextPreview(result.content);
+      log('INFO', `Execute completed for server="${server}" tool="${tool}" in ${Date.now() - t0}ms with isError=${result.isError}. Result=${contentPreview}`);
+      if (!result.isError && looksLikeTransportErrorText(textPreview)) {
+        log('WARN', `Execute completed for server="${server}" tool="${tool}" with transport-style error text but isError=false. Result text="${textPreview}"`);
+      }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));

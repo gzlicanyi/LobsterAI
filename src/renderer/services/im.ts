@@ -3,42 +3,48 @@
  * IPC wrapper for IM gateway operations
  */
 
-import { store } from '../store';
-import { PlatformRegistry } from '@shared/platform';
 import type { Platform } from '@shared/platform';
+import { PlatformRegistry } from '@shared/platform';
+
+import { store } from '../store';
 import {
-  setConfig,
-  setStatus,
-  setLoading,
-  setError,
-  addQQInstance,
-  removeQQInstance,
-  setQQInstanceConfig,
-  addFeishuInstance,
-  removeFeishuInstance,
-  setFeishuInstanceConfig,
   addDingTalkInstance,
+  addFeishuInstance,
+  addQQInstance,
+  addWecomInstance,
   removeDingTalkInstance,
+  removeFeishuInstance,
+  removeQQInstance,
+  removeWecomInstance,
+  setConfig,
   setDingTalkInstanceConfig,
   setEmailInstanceConfig,
   addEmailInstance,
   removeEmailInstance,
+  setError,
+  setFeishuInstanceConfig,
+  setLoading,
+  setQQInstanceConfig,
+  setStatus,
+  setWecomInstanceConfig,
 } from '../store/slices/imSlice';
 import type {
-  IMGatewayConfig,
-  IMGatewayStatus,
-  IMConfigResult,
-  IMStatusResult,
-  IMGatewayResult,
-  IMConnectivityTestResult,
-  IMConnectivityTestResponse,
-  QQOpenClawConfig,
-  QQInstanceConfig,
-  FeishuOpenClawConfig,
-  FeishuInstanceConfig,
-  DingTalkOpenClawConfig,
   DingTalkInstanceConfig,
   EmailInstanceConfig,
+  DingTalkOpenClawConfig,
+  FeishuInstanceConfig,
+  FeishuOpenClawConfig,
+  IMConfigResult,
+  IMConnectivityTestResponse,
+  IMConnectivityTestResult,
+  IMGatewayConfig,
+  IMGatewayResult,
+  IMGatewayStatus,
+  IMStatusResult,
+  QQInstanceConfig,
+  QQOpenClawConfig,
+  WecomInstanceConfig,
+  WecomOpenClawConfig,
 } from '../types/im';
 
 class IMService {
@@ -276,7 +282,7 @@ class IMService {
     const status = this.getStatus();
     return PlatformRegistry.platforms.some(p => {
       const s = status[p];
-      if (p === 'qq' || p === 'feishu' || p === 'dingtalk') {
+      if (p === 'qq' || p === 'feishu' || p === 'dingtalk' || p === 'wecom') {
         return (s as any)?.instances?.some((i: any) => i.connected);
       }
       return (s as any)?.connected;
@@ -588,6 +594,73 @@ class IMService {
       return false;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update email instance config';
+      store.dispatch(setError(message));
+      return false;
+    } finally {
+      store.dispatch(setLoading(false));
+    }
+  }
+
+  // ==================== WeCom Multi-Instance Operations ====================
+
+  async addWecomInstance(name: string): Promise<WecomInstanceConfig | null> {
+    try {
+      const result = await window.electron.im.addWecomInstance(name);
+      if (result.success && result.instance) {
+        store.dispatch(addWecomInstance(result.instance));
+        return result.instance;
+      }
+      console.error('[IM Service] Failed to add WeCom instance:', result.error);
+      return null;
+    } catch (error) {
+      console.error('[IM Service] Failed to add WeCom instance:', error);
+      return null;
+    }
+  }
+
+  async deleteWecomInstance(instanceId: string): Promise<boolean> {
+    try {
+      const result = await window.electron.im.deleteWecomInstance(instanceId);
+      if (result.success) {
+        store.dispatch(removeWecomInstance(instanceId));
+        return true;
+      }
+      console.error('[IM Service] Failed to delete WeCom instance:', result.error);
+      return false;
+    } catch (error) {
+      console.error('[IM Service] Failed to delete WeCom instance:', error);
+      return false;
+    }
+  }
+
+  async persistWecomInstanceConfig(instanceId: string, config: Partial<WecomOpenClawConfig>): Promise<boolean> {
+    try {
+      const result = await window.electron.im.setWecomInstanceConfig(instanceId, config, { syncGateway: false });
+      if (result.success) {
+        store.dispatch(setWecomInstanceConfig({ instanceId, config }));
+        return true;
+      }
+      console.error('[IM Service] Failed to persist WeCom instance config:', result.error);
+      return false;
+    } catch (error) {
+      console.error('[IM Service] Failed to persist WeCom instance config:', error);
+      return false;
+    }
+  }
+
+  async updateWecomInstanceConfig(instanceId: string, config: Partial<WecomOpenClawConfig>): Promise<boolean> {
+    try {
+      store.dispatch(setLoading(true));
+      const result = await window.electron.im.setWecomInstanceConfig(instanceId, config, { syncGateway: true });
+      if (result.success) {
+        await this.loadConfig();
+        await this.loadStatus();
+        return true;
+      }
+      store.dispatch(setError(result.error || 'Failed to update WeCom instance config'));
+      return false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update WeCom instance config';
       store.dispatch(setError(message));
       return false;
     } finally {

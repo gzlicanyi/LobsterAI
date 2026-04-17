@@ -4,44 +4,48 @@
  */
 
 import Database from 'better-sqlite3';
+
 import { PlatformRegistry } from '../../shared/platform';
 import {
-  IMGatewayConfig,
-  DingTalkOpenClawConfig,
+  DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG,
+  DEFAULT_DINGTALK_OPENCLAW_CONFIG,
+  DEFAULT_DISCORD_OPENCLAW_CONFIG,
+  DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG,
+  DEFAULT_FEISHU_OPENCLAW_CONFIG,
+  DEFAULT_IM_SETTINGS,
+  DEFAULT_NETEASE_BEE_CONFIG,
+  DEFAULT_NIM_CONFIG,
+  DEFAULT_POPO_CONFIG,
+  DEFAULT_QQ_CONFIG,
+  DEFAULT_QQ_MULTI_INSTANCE_CONFIG,
+  DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
+  DEFAULT_WECOM_CONFIG,
+  DEFAULT_WECOM_MULTI_INSTANCE_CONFIG,
+  DEFAULT_WEIXIN_CONFIG,
   DingTalkInstanceConfig,
   DingTalkMultiInstanceConfig,
-  FeishuOpenClawConfig,
+  DingTalkOpenClawConfig,
+  DiscordOpenClawConfig,
   FeishuInstanceConfig,
   FeishuMultiInstanceConfig,
-  TelegramOpenClawConfig,
+  FeishuOpenClawConfig,
+  IMGatewayConfig,
+  IMSessionMapping,
+  IMSettings,
+  NeteaseBeeChanConfig,
+  NimConfig,
+  Platform,
+  PopoOpenClawConfig,
   QQConfig,
   QQInstanceConfig,
   QQMultiInstanceConfig,
-  DiscordOpenClawConfig,
-  NimConfig,
-  NeteaseBeeChanConfig,
+  TelegramOpenClawConfig,
+  WecomInstanceConfig,
+  WecomMultiInstanceConfig,
   WecomOpenClawConfig,
-  PopoOpenClawConfig,
   WeixinOpenClawConfig,
-  IMSettings,
-  Platform,
-  IMSessionMapping,
   EmailMultiInstanceConfig,
   EmailInstanceConfig,
-  DEFAULT_DINGTALK_OPENCLAW_CONFIG,
-  DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG,
-  DEFAULT_FEISHU_OPENCLAW_CONFIG,
-  DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG,
-  DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
-  DEFAULT_QQ_CONFIG,
-  DEFAULT_QQ_MULTI_INSTANCE_CONFIG,
-  DEFAULT_DISCORD_OPENCLAW_CONFIG,
-  DEFAULT_NIM_CONFIG,
-  DEFAULT_NETEASE_BEE_CONFIG,
-  DEFAULT_WECOM_CONFIG,
-  DEFAULT_POPO_CONFIG,
-  DEFAULT_WEIXIN_CONFIG,
-  DEFAULT_IM_SETTINGS,
   DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG,
   DEFAULT_EMAIL_INSTANCE_CONFIG,
 } from './types';
@@ -541,6 +545,53 @@ export class IMStore {
         // Ignore parse errors
       }
     }
+
+    // Migrate single WeCom config to multi-instance format
+    const oldWecomSingleRow = this.db.prepare('SELECT value FROM im_config WHERE key = ?').get('wecomOpenClaw') as
+      | { value: string }
+      | undefined;
+    const existingWecomInstances = this.db
+      .prepare('SELECT key FROM im_config WHERE key LIKE ?')
+      .all('wecom:%') as Array<{ key: string }>;
+    if (oldWecomSingleRow && !existingWecomInstances.length) {
+      try {
+        const oldConfig = JSON.parse(oldWecomSingleRow.value) as WecomOpenClawConfig;
+        const instanceId = crypto.randomUUID();
+        const instanceConfig: WecomInstanceConfig = {
+          ...DEFAULT_WECOM_CONFIG,
+          ...oldConfig,
+          instanceId,
+          instanceName: 'WeCom Bot 1',
+        };
+        const now = Date.now();
+        this.db
+          .prepare('INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
+          .run(`wecom:${instanceId}`, JSON.stringify(instanceConfig), now);
+        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('wecomOpenClaw');
+        // Migrate session mappings
+        this.db
+          .prepare('UPDATE im_session_mappings SET platform = ? WHERE platform = ?')
+          .run(`wecom:${instanceId}`, 'wecom');
+        // Migrate agent bindings
+        const settingsRowWecom = this.db
+          .prepare('SELECT value FROM im_config WHERE key = ?')
+          .get('settings') as { value: string } | undefined;
+        if (settingsRowWecom) {
+          const settings = JSON.parse(settingsRowWecom.value) as IMSettings;
+          if (settings.platformAgentBindings?.['wecom']) {
+            settings.platformAgentBindings[`wecom:${instanceId}`] =
+              settings.platformAgentBindings['wecom'];
+            delete settings.platformAgentBindings['wecom'];
+            this.db
+              .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
+              .run(JSON.stringify(settings), now, 'settings');
+          }
+        }
+        console.log('[IMStore] Migrated single WeCom config to multi-instance format');
+      } catch {
+        // Ignore parse errors
+      }
+    }
   }
 
   private getConfigValue<T>(key: string): T | undefined {
@@ -587,7 +638,7 @@ export class IMStore {
       this.getConfigValue<NeteaseBeeChanConfig>('netease-bee') ?? DEFAULT_NETEASE_BEE_CONFIG;
     const qqMulti = this.getQQMultiInstanceConfig();
     const feishuMulti = this.getFeishuMultiInstanceConfig();
-    const wecom = this.getConfigValue<WecomOpenClawConfig>('wecomOpenClaw') ?? DEFAULT_WECOM_CONFIG;
+    const wecomMulti = this.getWecomMultiInstanceConfig();
     const popo = this.getConfigValue<PopoOpenClawConfig>('popo') ?? DEFAULT_POPO_CONFIG;
     const weixin = this.getConfigValue<WeixinOpenClawConfig>('weixin') ?? DEFAULT_WEIXIN_CONFIG;
     const settings = this.getConfigValue<IMSettings>('settings') ?? DEFAULT_IM_SETTINGS;
@@ -612,7 +663,7 @@ export class IMStore {
       nim: resolveEnabled(nimConfig, DEFAULT_NIM_CONFIG),
       'netease-bee': resolveEnabled(neteaseBeeChan, DEFAULT_NETEASE_BEE_CONFIG),
       qq: qqMulti,
-      wecom: resolveEnabled(wecom, DEFAULT_WECOM_CONFIG),
+      wecom: wecomMulti,
       popo: resolveEnabled(popo, DEFAULT_POPO_CONFIG),
       weixin: resolveEnabled(weixin, DEFAULT_WEIXIN_CONFIG),
       email,
@@ -643,7 +694,7 @@ export class IMStore {
       this.setQQMultiInstanceConfig(config.qq);
     }
     if (config.wecom) {
-      this.setWecomConfig(config.wecom);
+      this.setWecomMultiInstanceConfig(config.wecom);
     }
     if (config.popo) {
       this.setPopoConfig(config.popo);
@@ -931,16 +982,74 @@ export class IMStore {
     }
   }
 
-  // ==================== WeCom OpenClaw Config ====================
+  // ==================== WeCom Multi-Instance Config ====================
 
+  /** @deprecated Use getWecomMultiInstanceConfig() or getWecomInstances() instead */
   getWecomConfig(): WecomOpenClawConfig {
     const stored = this.getConfigValue<WecomOpenClawConfig>('wecomOpenClaw');
     return { ...DEFAULT_WECOM_CONFIG, ...stored };
   }
 
+  /** @deprecated Use setWecomInstanceConfig() instead */
   setWecomConfig(config: Partial<WecomOpenClawConfig>): void {
     const current = this.getWecomConfig();
     this.setConfigValue('wecomOpenClaw', { ...current, ...config });
+  }
+
+  getWecomInstances(): WecomInstanceConfig[] {
+    const rows = this.db
+      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
+      .all('wecom:%') as Array<{ key: string; value: string }>;
+    if (!rows.length) return [];
+    const instances: WecomInstanceConfig[] = [];
+    for (const row of rows) {
+      try {
+        const config = JSON.parse(row.value) as WecomInstanceConfig;
+        instances.push({ ...DEFAULT_WECOM_CONFIG, ...config });
+      } catch {
+        // Ignore parse errors
+      }
+    }
+    return instances;
+  }
+
+  getWecomInstanceConfig(instanceId: string): WecomInstanceConfig | null {
+    const stored = this.getConfigValue<WecomInstanceConfig>(`wecom:${instanceId}`);
+    if (!stored) return null;
+    return { ...DEFAULT_WECOM_CONFIG, ...stored };
+  }
+
+  setWecomInstanceConfig(instanceId: string, config: Partial<WecomInstanceConfig>): void {
+    const current = this.getWecomInstanceConfig(instanceId);
+    if (current) {
+      this.setConfigValue(`wecom:${instanceId}`, { ...current, ...config });
+    } else {
+      this.setConfigValue(`wecom:${instanceId}`, {
+        ...DEFAULT_WECOM_CONFIG,
+        instanceId,
+        instanceName: config.instanceName || `WeCom Bot`,
+        ...config,
+      });
+    }
+  }
+
+  deleteWecomInstance(instanceId: string): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`wecom:${instanceId}`);
+    // Clean up session mappings for this instance
+    this.db.prepare('DELETE FROM im_session_mappings WHERE platform = ?').run(`wecom:${instanceId}`);
+  }
+
+  getWecomMultiInstanceConfig(): WecomMultiInstanceConfig {
+    const instances = this.getWecomInstances();
+    if (instances.length === 0) return DEFAULT_WECOM_MULTI_INSTANCE_CONFIG;
+    return { instances };
+  }
+
+  setWecomMultiInstanceConfig(config: WecomMultiInstanceConfig): void {
+    // Write each instance individually
+    for (const inst of config.instances) {
+      this.setWecomInstanceConfig(inst.instanceId, inst);
+    }
   }
 
   // ==================== POPO ====================
@@ -1082,7 +1191,7 @@ export class IMStore {
     const hasNim = !!(config.nim.appKey && config.nim.account && config.nim.token);
     const hasNeteaseBeeChan = !!(config['netease-bee']?.clientId && config['netease-bee']?.secret);
     const hasQQ = config.qq?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;
-    const hasWecom = !!(config.wecom?.botId && config.wecom?.secret);
+    const hasWecom = config.wecom?.instances?.some(i => !!(i.botId && i.secret)) ?? false;
     return (
       hasDingTalk ||
       hasFeishu ||

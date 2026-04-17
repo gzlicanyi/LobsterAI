@@ -231,6 +231,7 @@ function syncIMChannels(configPath: string, imStore: IMStore): void {
       'telegram': (cfg) => imStore.setTelegramOpenClawConfig(cfg),
       'discord': (cfg) => imStore.setDiscordOpenClawConfig(cfg),
       'feishu': (cfg) => imStore.setFeishuOpenClawConfig(cfg),
+      'dingtalk': (cfg) => imStore.setDingTalkOpenClawConfig(cfg),
       'dingtalk-connector': (cfg) => imStore.setDingTalkOpenClawConfig(cfg),
       'qqbot': (cfg) => imStore.setQQConfig(cfg),
       'wecom': (cfg) => imStore.setWecomConfig(cfg),

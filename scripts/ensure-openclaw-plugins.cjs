@@ -4,10 +4,13 @@
  * Ensure preinstalled OpenClaw plugins are downloaded and placed into the
  * runtime extensions directory.
  *
- * Reads plugin declarations from package.json ("openclaw.plugins") and for
- * each plugin:
+ * Uses the OpenClaw CLI (`openclaw plugins install`) to handle downloading,
+ * dependency resolution, and proper module setup for each plugin declared in
+ * package.json ("openclaw.plugins").
+ *
+ * Flow per plugin:
  *   1. Checks a local cache in vendor/openclaw-plugins/{id}/
- *   2. Downloads via npm install if not cached at the right version
+ *   2. Installs via `openclaw plugins install` if not cached at the right version
  *   3. Copies the plugin into vendor/openclaw-runtime/current/extensions/{id}/
  *
  * Environment variables:
@@ -35,34 +38,49 @@ function die(msg) {
   process.exit(1);
 }
 
-function runNpm(args, opts = {}) {
-  const isWin = process.platform === 'win32';
-  const npmBin = isWin ? 'npm.cmd' : 'npm';
-  const result = spawnSync(npmBin, args, {
-    encoding: 'utf-8',
-    stdio: opts.stdio || ['ignore', 'pipe', 'pipe'],
-    cwd: opts.cwd,
-    shell: isWin,
-    timeout: opts.timeout || 5 * 60 * 1000,
-    windowsVerbatimArguments: isWin,
-  });
-
-  if (result.error) {
-    throw new Error(`npm ${args.join(' ')} failed: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    const stderr = (result.stderr || '').trim();
-    throw new Error(
-      `npm ${args.join(' ')} exited with code ${result.status}` +
-      (stderr ? `\n${stderr}` : '')
-    );
-  }
-
-  return (result.stdout || '').trim();
-}
-
 function copyDirRecursive(src, dest) {
   fs.cpSync(src, dest, { recursive: true, force: true });
+}
+
+/**
+ * Fix broken symlinks in node_modules/.bin/ directories.
+ *
+ * npm creates absolute symlinks during `openclaw plugins install` that point
+ * into the temporary staging directory.  After copying out of staging those
+ * symlinks are broken.  This rewrites each one to a correct relative path
+ * based on the symlink target structure (../pkgName/relative/to/bin).
+ */
+function fixBinSymlinks(baseDir) {
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isSymbolicLink()) {
+        const binDir = path.dirname(full);
+        if (path.basename(binDir) !== '.bin') continue;
+        const target = fs.readlinkSync(full);
+        if (!path.isAbsolute(target)) continue;
+        // Extract the path relative to node_modules/ from the absolute target.
+        // e.g. "/tmp/.../extensions/moltbot-popo/node_modules/qrcode/bin/qrcode"
+        //   -> "qrcode/bin/qrcode"
+        const nmSegment = '/node_modules/';
+        const nmIdx = target.lastIndexOf(nmSegment);
+        if (nmIdx === -1) continue;
+        const relToNm = target.slice(nmIdx + nmSegment.length); // "qrcode/bin/qrcode"
+        const newTarget = path.join('..', relToNm);              // "../qrcode/bin/qrcode"
+        try {
+          fs.unlinkSync(full);
+          fs.symlinkSync(newTarget, full);
+        } catch {
+          // best-effort; signing can still proceed if the symlink is removed
+        }
+      }
+    }
+  };
+  walk(baseDir);
 }
 
 function ensureDir(dirPath) {
@@ -78,35 +96,77 @@ function readJsonFile(filePath) {
 }
 
 /**
- * Find the installed package directory inside node_modules.
- * Handles scoped packages like @scope/name.
+ * Run the OpenClaw CLI with the given arguments.
+ *
+ * Uses the bundled runtime's openclaw.mjs entry point and sets
+ * OPENCLAW_STATE_DIR to control where plugins are installed.
  */
-function findInstalledPackageDir(nodeModulesDir, npmSpec) {
-  // npm spec might be scoped like "@dingtalk-real-ai/dingtalk-connector"
-  const pkgDir = path.join(nodeModulesDir, npmSpec);
-  if (fs.existsSync(path.join(pkgDir, 'package.json'))) {
-    return pkgDir;
+function runOpenClawCli(args, opts = {}) {
+  const openclawMjs = path.join(
+    rootDir, 'vendor', 'openclaw-runtime', 'current', 'openclaw.mjs'
+  );
+
+  if (!fs.existsSync(openclawMjs)) {
+    throw new Error(`OpenClaw CLI not found at ${openclawMjs}`);
   }
 
-  // Fallback: scan node_modules for a package with an openclaw.plugin.json
-  const scanDirs = (dir) => {
-    if (!fs.existsSync(dir)) return null;
-    for (const entry of fs.readdirSync(dir)) {
-      const entryPath = path.join(dir, entry);
-      if (entry.startsWith('@')) {
-        // Scoped package — look inside
-        const result = scanDirs(entryPath);
-        if (result) return result;
-      } else if (entry !== '.package-lock.json') {
-        if (fs.existsSync(path.join(entryPath, 'openclaw.plugin.json'))) {
-          return entryPath;
-        }
-      }
-    }
-    return null;
-  };
+  const result = spawnSync(process.execPath, [openclawMjs, ...args], {
+    encoding: 'utf-8',
+    stdio: opts.stdio || 'inherit',
+    cwd: opts.cwd || rootDir,
+    env: { ...process.env, ...opts.env },
+    timeout: opts.timeout || 5 * 60 * 1000,
+  });
 
-  return scanDirs(nodeModulesDir);
+  if (result.error) {
+    throw new Error(`openclaw ${args.join(' ')} failed: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const stderr = (result.stderr || '').trim();
+    throw new Error(
+      `openclaw ${args.join(' ')} exited with code ${result.status}` +
+      (stderr ? `\n${stderr}` : '')
+    );
+  }
+
+  return (result.stdout || '').trim();
+}
+
+/**
+ * Run npm to pack a plugin from a custom registry into a .tgz file.
+ * Returns the path to the packed .tgz.
+ */
+function npmPack(npmSpec, version, registry, outputDir) {
+  const isWin = process.platform === 'win32';
+  const npmBin = isWin ? 'npm.cmd' : 'npm';
+  const args = ['pack', `${npmSpec}@${version}`, '--pack-destination', outputDir];
+  if (registry) {
+    args.push(`--registry=${registry}`);
+  }
+
+  const result = spawnSync(npmBin, args, {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: outputDir,
+    shell: isWin,
+    timeout: 3 * 60 * 1000,
+    windowsVerbatimArguments: isWin,
+  });
+
+  if (result.error) {
+    throw new Error(`npm pack ${npmSpec}@${version} failed: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const stderr = (result.stderr || '').trim();
+    throw new Error(
+      `npm pack ${npmSpec}@${version} exited with code ${result.status}` +
+      (stderr ? `\n${stderr}` : '')
+    );
+  }
+
+  // npm pack outputs the filename of the tarball
+  const tgzName = (result.stdout || '').trim().split('\n').pop();
+  return path.join(outputDir, tgzName);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,16 +199,18 @@ for (const plugin of plugins) {
 
 const forceInstall = process.env.OPENCLAW_FORCE_PLUGIN_INSTALL === '1';
 const pluginCacheBase = path.join(rootDir, 'vendor', 'openclaw-plugins');
-const runtimeExtensionsDir = path.join(rootDir, 'vendor', 'openclaw-runtime', 'current', 'extensions');
+const runtimeCurrentDir = path.join(rootDir, 'vendor', 'openclaw-runtime', 'current');
+// Third-party plugins go into `third-party-extensions/` — a directory the gateway's
+// bundled-channel metadata scan never touches.  When the gateway runs from
+// `gateway-bundle.mjs` (root, not dist/), `RUNNING_FROM_BUILT_ARTIFACT` is false
+// and `resolveBundledPluginScanDir` falls back to `extensions/`.  Placing our
+// plugins there caused them to fail the `bundled-channel-entry` contract check
+// and wasted ~30s on serial load failures.  `third-party-extensions/` is discovered
+// solely via `plugins.load.paths` (origin="config"), bypassing the bundled contract.
+// See openclaw/openclaw#60196.
+const runtimeExtensionsDir = path.join(runtimeCurrentDir, 'third-party-extensions');
 
-// Verify runtime extensions directory exists
-if (!fs.existsSync(runtimeExtensionsDir)) {
-  die(
-    `Runtime extensions directory does not exist: ${runtimeExtensionsDir}\n` +
-    'Build the OpenClaw runtime first (e.g. npm run openclaw:runtime:host).'
-  );
-}
-
+ensureDir(runtimeExtensionsDir);
 ensureDir(pluginCacheBase);
 
 log(`Processing ${plugins.length} plugin(s)...`);
@@ -174,70 +236,74 @@ for (const plugin of plugins) {
   }
 
   if (needsDownload) {
-    log(`Downloading ${npmSpec}@${version}...`);
+    log(`Installing ${npmSpec}@${version} via OpenClaw CLI...`);
 
-    // Use a temp wrapper package to download the plugin via npm install.
-    // This avoids platform-specific tar extraction issues on Windows.
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `openclaw-plugin-${id}-`));
+    // Use a temporary OPENCLAW_STATE_DIR so the CLI installs plugins
+    // into a staging directory rather than the user's global config.
+    const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), `openclaw-plugin-staging-`));
 
     try {
-      // Create a minimal wrapper package.json
-      const wrapperPkg = {
-        name: `openclaw-plugin-wrapper-${id}`,
-        version: '0.0.0',
-        private: true,
-        dependencies: {
-          [npmSpec]: version,
-        },
-      };
-      fs.writeFileSync(
-        path.join(tmpDir, 'package.json'),
-        JSON.stringify(wrapperPkg, null, 2),
-        'utf-8'
-      );
+      let installSpec;
 
-      // Step 1: Install the plugin package (npm handles download + extraction)
-      log('  [1/2] Downloading plugin package...');
-      const installArgs = ['install', '--no-audit', '--no-fund', '--ignore-scripts'];
       if (registry) {
-        installArgs.push(`--registry=${registry}`);
+        // For plugins with a custom registry, first download the tarball via
+        // `npm pack`, then install the local .tgz via the OpenClaw CLI.
+        log(`  Packing from custom registry: ${registry}`);
+        const tgzPath = npmPack(npmSpec, version, registry, stagingDir);
+        installSpec = tgzPath;
+      } else {
+        // Standard npm/ClawHub package — the CLI handles resolution.
+        installSpec = `${npmSpec}@${version}`;
       }
-      runNpm(
-        installArgs,
-        { cwd: tmpDir, stdio: 'inherit' }
+
+      runOpenClawCli(
+        ['plugins', 'install', installSpec, '--force', '--dangerously-force-unsafe-install'],
+        {
+          env: {
+            OPENCLAW_STATE_DIR: stagingDir,
+            // Prevent npm from auto-installing peerDependencies (npm v7+).
+            // Channel plugins declare openclaw as a peerDep, but the host
+            // gateway already provides the SDK at runtime.  Without this,
+            // npm installs the full openclaw SDK + transitive deps (~738 MB)
+            // into each plugin's node_modules.
+            npm_config_legacy_peer_deps: 'true',
+          },
+          stdio: 'inherit',
+        }
       );
 
-      // Step 2: Locate the installed plugin in node_modules
-      const nodeModulesDir = path.join(tmpDir, 'node_modules');
-      const pluginSrcDir = findInstalledPackageDir(nodeModulesDir, npmSpec);
-      if (!pluginSrcDir) {
-        throw new Error(
-          `Could not find installed plugin package ${npmSpec} in ${nodeModulesDir}`
-        );
+      // The CLI installs to {OPENCLAW_STATE_DIR}/extensions/{pluginId}/
+      const installedDir = path.join(stagingDir, 'extensions', id);
+      if (!fs.existsSync(installedDir)) {
+        // Some plugins use a different directory name than the declared id.
+        // Scan the extensions directory for the installed plugin.
+        const extDir = path.join(stagingDir, 'extensions');
+        const entries = fs.existsSync(extDir) ? fs.readdirSync(extDir) : [];
+        if (entries.length === 0) {
+          throw new Error(`No plugin found in staging directory after install`);
+        }
+        // Use the first (and likely only) directory
+        const actualDir = path.join(extDir, entries[0]);
+        if (!fs.existsSync(path.join(actualDir, 'openclaw.plugin.json')) &&
+            !fs.existsSync(path.join(actualDir, 'package.json'))) {
+          throw new Error(`Installed plugin directory ${entries[0]} has no plugin manifest`);
+        }
+        // Copy the actual directory
+        if (fs.existsSync(cacheDir)) {
+          fs.rmSync(cacheDir, { recursive: true, force: true });
+        }
+        ensureDir(path.dirname(cacheDir));
+        copyDirRecursive(actualDir, cacheDir);
+        fixBinSymlinks(cacheDir);
+      } else {
+        // Replace cache dir with new content
+        if (fs.existsSync(cacheDir)) {
+          fs.rmSync(cacheDir, { recursive: true, force: true });
+        }
+        ensureDir(path.dirname(cacheDir));
+        copyDirRecursive(installedDir, cacheDir);
+        fixBinSymlinks(cacheDir);
       }
-
-      log('  [2/2] Installing plugin dependencies...');
-
-      // Install the plugin's own production dependencies inside it
-      // so it becomes self-contained
-      const pluginPkg = readJsonFile(path.join(pluginSrcDir, 'package.json'));
-      const hasDeps = pluginPkg &&
-        pluginPkg.dependencies &&
-        Object.keys(pluginPkg.dependencies).length > 0;
-
-      if (hasDeps) {
-        runNpm(
-          ['install', '--omit=dev', '--no-audit', '--no-fund', '--legacy-peer-deps'],
-          { cwd: pluginSrcDir, stdio: 'inherit' }
-        );
-      }
-
-      // Replace cache dir with new content
-      if (fs.existsSync(cacheDir)) {
-        fs.rmSync(cacheDir, { recursive: true, force: true });
-      }
-      ensureDir(path.dirname(cacheDir));
-      copyDirRecursive(pluginSrcDir, cacheDir);
 
       // Write install info for cache validation
       fs.writeFileSync(
@@ -264,9 +330,9 @@ for (const plugin of plugins) {
       }
       die(`Failed to install plugin ${id}: ${err.message}`);
     } finally {
-      // Clean up temp directory
+      // Clean up staging directory
       try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        fs.rmSync(stagingDir, { recursive: true, force: true });
       } catch {
         // best-effort cleanup
       }
@@ -303,13 +369,13 @@ log(`All ${plugins.length} plugin(s) installed successfully.`);
 // The openclaw-weixin plugin defines loginWithQrStart/loginWithQrWait in its
 // gateway adapter but does not declare gatewayMethods on the channel plugin
 // object.  Without this declaration, the gateway's resolveWebLoginProvider()
-// cannot discover the plugin for web.login.start/web.login.wait RPC calls.
-// Patch channel.ts to inject the missing property.
+// cannot discover the plugin for web.login.start/web.login.wait RPC calls
+// (used by our embedded web UI — the standard CLI login path uses
+// plugin.auth.login instead and does not need this).
 const weixinChannelPath = path.join(runtimeExtensionsDir, 'openclaw-weixin', 'src', 'channel.ts');
 if (fs.existsSync(weixinChannelPath)) {
   let src = fs.readFileSync(weixinChannelPath, 'utf8');
   if (!src.includes('gatewayMethods')) {
-    // Insert gatewayMethods right after the configSchema block in weixinPlugin
     const marker = 'configSchema: {';
     const idx = src.indexOf(marker);
     if (idx !== -1) {
@@ -319,25 +385,5 @@ if (fs.existsSync(weixinChannelPath)) {
     }
   } else {
     log('openclaw-weixin/src/channel.ts already has gatewayMethods, skipping patch');
-  }
-}
-
-// --- Post-install patch: openclaw-weixin CHANNEL_VERSION ---
-// Replace the dynamic readChannelVersion() call with a hardcoded version string
-// to avoid runtime resolution issues when the plugin is bundled outside its
-// original npm package context.
-const weixinApiPath = path.join(runtimeExtensionsDir, 'openclaw-weixin', 'src', 'api', 'api.ts');
-if (fs.existsSync(weixinApiPath)) {
-  let apiSrc = fs.readFileSync(weixinApiPath, 'utf8');
-  const versionBefore = 'const CHANNEL_VERSION = readChannelVersion();';
-  const versionAfter = 'const CHANNEL_VERSION = "1.0.3";';
-  if (apiSrc.includes(versionBefore)) {
-    apiSrc = apiSrc.replace(versionBefore, versionAfter);
-    fs.writeFileSync(weixinApiPath, apiSrc);
-    log('Patched openclaw-weixin/src/api/api.ts: replaced readChannelVersion() with hardcoded "1.0.3"');
-  } else if (apiSrc.includes(versionAfter)) {
-    log('openclaw-weixin/src/api/api.ts already has hardcoded CHANNEL_VERSION, skipping patch');
-  } else {
-    log('WARNING: could not find CHANNEL_VERSION assignment in openclaw-weixin/src/api/api.ts, skipping patch');
   }
 }
