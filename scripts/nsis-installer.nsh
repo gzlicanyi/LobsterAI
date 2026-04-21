@@ -20,8 +20,7 @@
   ; Stop-Process -Force is equivalent to taskkill /F — the processes have no
   ; chance to run before-quit cleanup, so file handles may linger briefly as
   ; "ghost handles" in the Windows kernel. We poll until no matching process
-  ; remains, then force-remove the old install directory so that the old
-  ; uninstaller (which may lack our customUnInit fix) is never invoked.
+  ; remains before proceeding.
 
   nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -Command "\
     Stop-Process -Name LobsterAI -Force -ErrorAction SilentlyContinue;\
@@ -35,25 +34,64 @@
     }"'
   Pop $0
 
-  ; ── Remove old installation directory ──
-  ; After all processes are gone, ghost file handles may still linger for a
-  ; few seconds. We must remove the old install directory — including the old
-  ; uninstaller exe — to prevent electron-builder from invoking it (which
-  ; lacks our customUnInit and would show an undismissable dialog).
+  ; ── Backup user-created skills to AppData before extraction overwrites them ──
+  ; Copy non-bundled skills to %APPDATA%\LobsterAI\skills-backup\ so they are
+  ; preserved when NSIS extracts the new version over the existing install.
+  ; The backup is restored in customInstall after extraction completes.
   ;
-  ; Strategy: rename $INSTDIR to a temp name (instant, even for thousands of
-  ; files). The actual deletion is deferred to customInstall so that
-  ; user-created skills in $INSTDIR.old\resources\SKILLs can be copied back
-  ; into the new install before the old directory is removed.
-  ; If rename fails (ghost file handles), skip — the installer's built-in
-  ; uninstall step will handle the old directory.
+  ; Quoting note: paths use \"..\" (backslash-escaped quote) — NOT $\"..$\" —
+  ; because $\"..$\" produces raw quotes that Windows CRT argv parsing consumes,
+  ; leaving the path unquoted and causing PowerShell method calls to fail.
+  CreateDirectory "$APPDATA\LobsterAI"
+  ClearErrors
+  FileOpen $R0 "$APPDATA\LobsterAI\skill-migrate.log" w
+  IfErrors BackupLogOpenFailed
+    FileWrite $R0 "backup-start INSTDIR=$INSTDIR APPDATA=$APPDATA$\r$\n"
+    Goto BackupDoExec
+  BackupLogOpenFailed:
+    StrCpy $R0 ""
+  BackupDoExec:
+
+  nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -Command "\
+    $$src    = \"$INSTDIR\resources\SKILLs\";\
+    $$backup = \"$APPDATA\LobsterAI\skills-backup\";\
+    $$config = \"$$src\skills.config.json\";\
+    if (Test-Path $$backup) { Remove-Item -Path $$backup -Recurse -Force -ErrorAction SilentlyContinue };\
+    if (Test-Path $$src) {\
+      $$bundled = @(try {\
+        if (Test-Path $$config) {\
+          (Get-Content $$config -Raw | ConvertFrom-Json).defaults.PSObject.Properties.Name\
+        }\
+      } catch { });\
+      $$userSkills = @(Get-ChildItem -Path $$src -Directory | Where-Object { $$bundled -notcontains $$_.Name });\
+      if ($$userSkills.Count -gt 0) {\
+        New-Item -ItemType Directory -Path $$backup -Force | Out-Null;\
+        $$userSkills | ForEach-Object {\
+          Copy-Item -Path $$_.FullName -Destination (Join-Path $$backup $$_.Name) -Recurse -Force\
+        }\
+      }\
+    }"'
+  Pop $0
+  Pop $1
+
+  StrCmp $R0 "" BackupSkipCloseLog
+    FileWrite $R0 "backup-end exit=$0$\r$\n"
+    FileWrite $R0 "output: $1$\r$\n"
+    FileClose $R0
+  BackupSkipCloseLog:
+
+  ; ── Remove old installation directory ──
+  ; Rename $INSTDIR so the old uninstaller exe disappears from its registered
+  ; path — electron-builder cannot invoke it and the "app cannot be closed"
+  ; dialog (present in old uninstallers that lack customUnInit) is never shown.
+  ; User skills are already safe in the AppData backup above, so skill
+  ; preservation does not depend on this rename succeeding.
   IfFileExists "$INSTDIR\*.*" 0 SkipOldDirRemoval
     Rename "$INSTDIR" "$INSTDIR.old"
     IfErrors 0 RenameOK
       Goto SkipOldDirRemoval
     RenameOK:
-      ; Deletion is deferred to customInstall, after user-created skills are
-      ; copied back from $INSTDIR.old to the new $INSTDIR.
+      nsExec::Exec 'cmd /c rd /s /q "$INSTDIR.old"'
   SkipOldDirRemoval:
 !macroend
 
@@ -93,44 +131,30 @@
   FileWrite $2 "tar-extract-done: $5-$4-$3 $6:$7:$8 exit=$0$\r$\n"
   Delete "$INSTDIR\resources\win-resources.tar"
 
-  ; ── Restore user-created skills from old install dir ──
-  ; Read skills.config.json from the old install to identify bundled skill IDs.
-  ; Skills in $INSTDIR.old that are NOT listed in skills.config.json defaults
-  ; are user-created and copied back into the new install.
-  ; Falls back to "copy anything not already in the new dir" if the config is absent.
-  ; This runs synchronously so the app never launches before skills are ready.
-  IfFileExists "$INSTDIR.old\resources\SKILLs\*.*" 0 SkipSkillRestore
+  ; ── Restore user-created skills from AppData backup ──
+  ; The backup was created in customInit before extraction began. Restore any
+  ; skills not already present in the new install, then clean up the backup.
+  IfFileExists "$APPDATA\LobsterAI\skills-backup\*.*" 0 SkipSkillRestore
     ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
     FileWrite $2 "skill-restore-start: $5-$4-$3 $6:$7:$8$\r$\n"
 
-    nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -Command "\
-      $$oldSkills = [IO.Path]::Combine($\"$INSTDIR.old$\", $\"resources$\", $\"SKILLs$\");\
-      $$newSkills = [IO.Path]::Combine($\"$INSTDIR$\",     $\"resources$\", $\"SKILLs$\");\
-      $$config    = [IO.Path]::Combine($$oldSkills, $\"skills.config.json$\");\
-      $$bundled   = @(try {\
-        if (Test-Path $$config) {\
-          (Get-Content $$config -Raw | ConvertFrom-Json).defaults.PSObject.Properties.Name\
+    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -Command "\
+      $$backup    = \"$APPDATA\LobsterAI\skills-backup\";\
+      $$newSkills = \"$INSTDIR\resources\SKILLs\";\
+      Get-ChildItem -Path $$backup -Directory | ForEach-Object {\
+        $$target = Join-Path $$newSkills $$_.Name;\
+        if (-not (Test-Path $$target)) {\
+          Copy-Item -Path $$_.FullName -Destination $$target -Recurse -Force\
         }\
-      } catch { });\
-      Get-ChildItem -Path $$oldSkills -Directory | ForEach-Object {\
-        if ($$bundled -notcontains $$_.Name) {\
-          $$target = [IO.Path]::Combine($$newSkills, $$_.Name);\
-          if (-not (Test-Path $$target)) {\
-            Copy-Item -Path $$_.FullName -Destination $$target -Recurse -Force\
-              -ErrorAction SilentlyContinue\
-          }\
-        }\
-      }"'
+      };\
+      Remove-Item -Path $$backup -Recurse -Force -ErrorAction SilentlyContinue"'
     Pop $0
+    Pop $1
 
     ${GetTime} "" "L" $3 $4 $5 $6 $7 $8 $9
     FileWrite $2 "skill-restore-done: $5-$4-$3 $6:$7:$8 exit=$0$\r$\n"
+    FileWrite $2 "skill-restore-output: $1$\r$\n"
   SkipSkillRestore:
-
-  ; ── Delete the old install directory now that user skills are restored ──
-  IfFileExists "$INSTDIR.old\*.*" 0 SkipOldDirCleanup
-    nsExec::Exec 'cmd /c rd /s /q "$INSTDIR.old"'
-  SkipOldDirCleanup:
 
   System::Call 'Kernel32::SetEnvironmentVariable(t "ELECTRON_RUN_AS_NODE", t "")i'
 
