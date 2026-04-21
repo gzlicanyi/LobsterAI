@@ -1304,6 +1304,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const client = this.requireGatewayClient();
     try {
       console.log('[OpenClawRuntime] chat.send params:', { sessionKey, messageLength: outboundMessage.length, runId });
+      console.log('[OpenClawRuntime] chat.send imageAttachments diagnosis:', {
+        hasImageAttachments: !!options.imageAttachments,
+        imageAttachmentsCount: options.imageAttachments?.length ?? 0,
+        imageAttachmentsDetail: options.imageAttachments?.map(img => ({
+          name: img.name,
+          mimeType: img.mimeType,
+          base64Length: img.base64Data?.length ?? 0,
+        })) ?? [],
+      });
       const attachments = options.imageAttachments?.length
         ? options.imageAttachments.map((img) => ({
           type: 'image',

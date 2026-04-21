@@ -293,6 +293,18 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       : undefined;
 
     // Extract image attachments (with base64 data) for vision-capable models
+    console.log('[CoworkPromptInput] handleSubmit: attachment diagnosis', {
+      totalAttachments: attachments.length,
+      modelSupportsImage,
+      effectiveModelId: effectiveSelectedModel?.id ?? null,
+      attachmentDetails: attachments.map(a => ({
+        path: a.path,
+        name: a.name,
+        isImage: a.isImage,
+        hasDataUrl: !!a.dataUrl,
+        dataUrlLength: a.dataUrl?.length ?? 0,
+      })),
+    });
     const imageAtts: CoworkImageAttachment[] = [];
     for (const attachment of attachments) {
       if (attachment.isImage && attachment.dataUrl) {
@@ -303,7 +315,19 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             mimeType: extracted.mimeType,
             base64Data: extracted.base64Data,
           });
+        } else {
+          console.warn('[CoworkPromptInput] handleSubmit: extractBase64FromDataUrl returned null', {
+            name: attachment.name,
+            dataUrlPrefix: attachment.dataUrl.slice(0, 60),
+          });
         }
+      } else if (attachment.isImage) {
+        console.warn('[CoworkPromptInput] handleSubmit: image attachment missing dataUrl', {
+          path: attachment.path,
+          name: attachment.name,
+          isImage: attachment.isImage,
+          hasDataUrl: !!attachment.dataUrl,
+        });
       }
     }
 
@@ -324,6 +348,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         count: imageAtts.length,
         names: imageAtts.map(a => a.name),
         base64Lengths: imageAtts.map(a => a.base64Data.length),
+      });
+    } else if (attachments.some(a => a.isImage || isImagePath(a.path))) {
+      console.warn('[CoworkPromptInput] handleSubmit: has image-like attachments but imageAtts is EMPTY — images will NOT be sent as base64', {
+        imageAttachments: attachments.filter(a => a.isImage || isImagePath(a.path)).map(a => ({
+          path: a.path,
+          isImage: a.isImage,
+          hasDataUrl: !!a.dataUrl,
+        })),
       });
     }
     const result = await onSubmit(finalPrompt, skillPrompt, imageAtts.length > 0 ? imageAtts : undefined);
@@ -520,6 +552,17 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         ? isImagePath(nativePath)
         : isImageMimeType(file.type);
 
+      console.log('[CoworkPromptInput] handleIncomingFiles: processing file', {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        nativePath,
+        fileIsImage,
+        modelSupportsImage,
+        effectiveModelId: effectiveSelectedModel?.id ?? null,
+        effectiveModelSupportsImage: effectiveSelectedModel?.supportsImage ?? null,
+      });
+
       if (fileIsImage) {
         if (modelSupportsImage) {
           // For images on vision-capable models, read as data URL
@@ -527,13 +570,16 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             try {
               const result = await window.electron.dialog.readFileAsDataUrl(nativePath);
               if (result.success && result.dataUrl) {
+                console.log('[CoworkPromptInput] handleIncomingFiles: native image read OK', { nativePath, dataUrlLength: result.dataUrl.length });
                 addAttachment(nativePath, { isImage: true, dataUrl: result.dataUrl });
                 continue;
               }
+              console.warn('[CoworkPromptInput] handleIncomingFiles: readFileAsDataUrl returned falsy', { nativePath, success: result.success });
             } catch (error) {
               console.error('Failed to read image as data URL:', error);
             }
             // Fallback: add as regular file attachment
+            console.warn('[CoworkPromptInput] handleIncomingFiles: native image fallback to path-only (no dataUrl)', { nativePath });
             addAttachment(nativePath);
           } else {
             // No native path (clipboard/drag from browser):
@@ -542,11 +588,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             let dataUrl: string | null = null;
             try {
               dataUrl = await fileToDataUrl(file);
+              console.log('[CoworkPromptInput] handleIncomingFiles: clipboard fileToDataUrl OK', { dataUrlLength: dataUrl?.length ?? 0 });
             } catch (error) {
-              console.error('Failed to read clipboard image as data URL:', error);
+              console.error('[CoworkPromptInput] handleIncomingFiles: clipboard fileToDataUrl FAILED:', error);
             }
 
             const stagedPath = await saveInlineFile(file);
+            console.log('[CoworkPromptInput] handleIncomingFiles: clipboard saveInlineFile result', { stagedPath, hasDataUrl: !!dataUrl });
 
             if (stagedPath) {
               addAttachment(stagedPath, {
@@ -563,6 +611,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           continue;
         }
         // Model doesn't support image input — add as file path and show hint
+        console.warn('[CoworkPromptInput] handleIncomingFiles: image skipped vision path because modelSupportsImage=false', {
+          fileName: file.name,
+          effectiveModelId: effectiveSelectedModel?.id ?? null,
+          effectiveModelSupportsImage: effectiveSelectedModel?.supportsImage ?? null,
+        });
         hasImageWithoutVision = true;
       }
 
@@ -580,7 +633,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     if (hasImageWithoutVision) {
       setImageVisionHint(true);
     }
-  }, [addAttachment, addImageAttachmentFromDataUrl, disabled, fileToDataUrl, getNativeFilePath, isStreaming, modelSupportsImage, saveInlineFile]);
+  }, [addAttachment, addImageAttachmentFromDataUrl, disabled, effectiveSelectedModel, fileToDataUrl, getNativeFilePath, isStreaming, modelSupportsImage, saveInlineFile]);
 
   const handleAddFile = useCallback(async () => {
     if (isAddingFile || disabled || isStreaming) return;
@@ -597,14 +650,19 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             try {
               const readResult = await window.electron.dialog.readFileAsDataUrl(filePath);
               if (readResult.success && readResult.dataUrl) {
+                console.log('[CoworkPromptInput] handleAddFile: image read OK', { filePath, dataUrlLength: readResult.dataUrl.length });
                 addAttachment(filePath, { isImage: true, dataUrl: readResult.dataUrl });
                 continue;
               }
+              console.warn('[CoworkPromptInput] handleAddFile: readFileAsDataUrl returned falsy', { filePath });
             } catch (error) {
               console.error('Failed to read image as data URL:', error);
-
             }
           } else {
+            console.warn('[CoworkPromptInput] handleAddFile: image skipped vision path because modelSupportsImage=false', {
+              filePath,
+              effectiveModelId: effectiveSelectedModel?.id ?? null,
+            });
             hasImageWithoutVision = true;
           }
         }
@@ -619,7 +677,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     } finally {
       setIsAddingFile(false);
     }
-  }, [addAttachment, isAddingFile, disabled, isStreaming, modelSupportsImage]);
+  }, [addAttachment, effectiveSelectedModel, isAddingFile, disabled, isStreaming, modelSupportsImage]);
 
   const handleRemoveAttachment = useCallback((path: string) => {
     dispatch(setDraftAttachments({
